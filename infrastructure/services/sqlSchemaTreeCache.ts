@@ -5,12 +5,11 @@
 // a designer change (bumped token) refetches.
 import { databaseClient } from './databaseClient';
 import type { SqlSchemaTree } from '../../types/global/quolldesk-bridge-database';
-
-type SqlDialect = 'mysql' | 'postgresql';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 
 const cache = new Map<string, Promise<SqlSchemaTree>>();
 
-export function fetchSqlSchemaTree(dialect: SqlDialect, connectionId: string, refreshToken = 0): Promise<SqlSchemaTree> {
+export function fetchSqlSchemaTree(dialect: SqlEngineId, connectionId: string, refreshToken = 0): Promise<SqlSchemaTree> {
   const key = `${dialect}/${connectionId}/${refreshToken}`;
   let promise = cache.get(key);
   if (!promise) {

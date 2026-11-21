@@ -1,0 +1,596 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const registry = require("./dbCommon/connectionRegistry.cjs");
+
+// Fake driver mirroring the REAL mssql (tedious) public API surface the bridge
+// is allowed to touch (verified against node_modules/mssql 12.x source):
+// - new ConnectionPool(cfg) → pool.connect() → Promise<pool>
+// - pool.request(overrides) → Request (overrides: { requestTimeout })
+// - req.input(name, value) → chainable; req.query(sql) →
+//   { recordsets: [...], recordset, rowsAffected: [n, ...] }
+// - pool.transaction() / new Transaction(pool) → { begin, commit, rollback }
+// - new Request(tx) — a Request bound to a transaction (queries route via
+//   parent: pool when parent.config exists, otherwise parent.pool).
+// Routing: the test installs pool.respond(sql, req); every executed statement
+// is recorded in pool.queryLog ({ sql, parameters, overrides, onTx }).
+function makeFakeMssql() {
+  const state = { pools: [] };
+  class FakeRequest {
+    constructor(parent, overrides = {}) {
+      this.parent = parent;
+      this.overrides = overrides || {};
+      this.parameters = {};
+    }
+    input(name, value) { this.parameters[name] = value; return this; }
+    async query(sql) {
+      const pool = this.parent && this.parent.config ? this.parent : this.parent.pool;
+      pool.queryLog.push({
+        sql,
+        parameters: { ...this.parameters },
+        overrides: { ...this.overrides },
+        onTx: pool.transactions.includes(this.parent),
+      });
+      const res = (pool.respond || makeResponder({}))(sql, this, pool);
+      if (res && res.__error) throw res.error;
+      return {
+        recordsets: (res && res.recordsets) || [],
+        recordset: res && res.recordsets && res.recordsets[0],
+        rowsAffected: (res && res.rowsAffected) || [],
+      };
+    }
+  }
+  class FakeTransaction {
+    constructor(pool) {
+      this.pool = pool;
+      this.events = [];
+      pool.transactions.push(this);
+    }
+    async begin() { this.events.push("begin"); }
+    async commit() { this.events.push("commit"); }
+    async rollback() { this.events.push("rollback"); }
+  }
+  class FakeConnectionPool {
+    constructor(config) {
+      this.config = config;
+      this.queryLog = [];
+      this.transactions = [];
+      state.pools.push(this);
+      this.closed = false;
+    }
+    async connect() { return this; }
+    request(overrides) { return new FakeRequest(this, overrides); }
+    transaction() { return new FakeTransaction(this); }
+    async close() { this.closed = true; }
+  }
+  return { ConnectionPool: FakeConnectionPool, Request: FakeRequest, Transaction: FakeTransaction, state };
+}
+
+// SQL-shape router with per-test data. Keys mirror the bridge's query shapes.
+function makeResponder(data = {}) {
+  const first = (rows) => ({ recordsets: [rows], rowsAffected: [rows.length] });
+  return (sql, req) => {
+    const lower = String(sql).toLowerCase();
+    if (lower.includes("@@version")) return first([{ v: data.version || "Microsoft SQL Server 2022 (RTM-CU12) 16.0.4135.4" }]);
+    if (lower.startsWith("select s.name as schema_name")) return first(data.listing || []);
+    if (lower.includes("information_schema.columns")) return first(data.columns || []);
+    if (lower.includes("table_constraints") && lower.includes("primary key")) return first(data.pk || []);
+    if (lower.includes("sys.indexes")) return first(data.indexes || []);
+    if (lower.includes("sys.sql_modules")) {
+      const def = data.ddl ? data.ddl[req.parameters.qualified || ""] : null;
+      return first(def ? [{ definition: def }] : []);
+    }
+    if (lower.includes("sys.partitions")) return first([{ c: data.rowCount != null ? data.rowCount : 0 }]);
+    if (lower.includes("sys.foreign_keys")) return first(data.fks || []);
+    if (lower.includes("select * from")) {
+      if (typeof data.page === "function") return first(data.page(sql, req) || []);
+      return first([]);
+    }
+    return { recordsets: [], rowsAffected: [1] };
+  };
+}
+
+const MSSQL_CHANNELS = [
+  "quolldesk:mssql:connect",
+  "quolldesk:mssql:disconnect",
+  "quolldesk:mssql:test",
+  "quolldesk:mssql:schemaTree",
+  "quolldesk:mssql:tableMeta",
+  "quolldesk:mssql:tableRows",
+  "quolldesk:mssql:query",
+  "quolldesk:mssql:applyTableChanges",
+  "quolldesk:mssql:pickBackupPath",
+  "quolldesk:mssql:pickRestoreFile",
+  "quolldesk:mssql:backup",
+  "quolldesk:mssql:restore",
+];
+
+const CONNECT_OPTS = { hostname: "sql.example.com", port: 1433, username: "sa", password: "pw" };
+
+function setup() {
+  registry._resetForTests();
+  const bridge = require("./mssqlBridge.cjs");
+  const fake = makeFakeMssql();
+  bridge._setDriverForTests(fake);
+  const handlers = new Map();
+  bridge.registerHandlers({ handle: (c, fn) => handlers.set(c, fn) }, {});
+  const pushes = [];
+  const event = { sender: { id: 21, isDestroyed: () => false, send: (_channel, payload) => pushes.push(payload), once() {}, removeListener() {} } };
+  return { bridge, fake, handlers, pushes, call: async (channel, payload) => handlers.get(channel)(event, payload) };
+}
+
+/** Poll the captured job-progress pushes until one with `phase` lands. */
+function waitForPush(pushes, phase, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      const hit = pushes.find((p) => p.phase === phase);
+      if (hit) return resolve(hit);
+      if (Date.now() - started > timeoutMs) {
+        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
+      }
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+}
+
+function tmpSqlFile(label) {
+  return path.join(os.tmpdir(), `nc-mssql-bridge-test-${label}-${process.pid}-${Math.random().toString(16).slice(2)}.sql`);
+}
+
+async function connect(call, config) {
+  const conn = await call("quolldesk:mssql:connect", { ...CONNECT_OPTS, ...(config ? { config } : {}) });
+  assert.equal(conn.ok, true, JSON.stringify(conn));
+  return conn.data.connectionId;
+}
+
+test("registers all 12 mssql channels", () => {
+  const { handlers, bridge } = setup();
+  for (const channel of MSSQL_CHANNELS) {
+    assert.ok(handlers.has(channel), `missing channel: ${channel}`);
+  }
+  bridge._setDriverForTests(undefined);
+});
+
+test("connect maps hostname/port/user/password/database and TLS config to the driver config; disconnect closes the pool", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  assert.equal(fake.state.pools.length, 1);
+  const cfg = fake.state.pools[0].config;
+  assert.equal(cfg.server, "sql.example.com");
+  assert.equal(cfg.port, 1433);
+  assert.equal(cfg.user, "sa");
+  assert.equal(cfg.password, "pw");
+  assert.equal(cfg.database, undefined);
+  // Default: TLS on, certificate verification strict.
+  assert.equal(cfg.options.encrypt, true);
+  assert.equal(cfg.options.trustServerCertificate, false);
+
+  const entry = registry.getConnection(connectionId);
+  assert.equal(entry.dialect, "mssql");
+
+  // tls:false → encrypt off; tlsInsecure → trust all certificates.
+  const conn2 = await call("quolldesk:mssql:connect", { ...CONNECT_OPTS, config: { database: "appdb", tls: false, tlsInsecure: true } });
+  const cfg2 = fake.state.pools[1].config;
+  assert.equal(cfg2.database, "appdb");
+  assert.equal(cfg2.options.encrypt, false);
+  assert.equal(cfg2.options.trustServerCertificate, true);
+
+  await call("quolldesk:mssql:disconnect", { connectionId: conn2.data.connectionId });
+  assert.equal(fake.state.pools[1].closed, true);
+  const dead = await call("quolldesk:mssql:schemaTree", { connectionId: conn2.data.connectionId });
+  assert.equal(dead.ok, false);
+  assert.equal(dead.error.code, "NOT_CONNECTED");
+  bridge._setDriverForTests(undefined);
+});
+
+test("connect/test validate hostname and integer port", async () => {
+  const { bridge, call } = setup();
+  const noHost = await call("quolldesk:mssql:connect", { port: 1433 });
+  assert.equal(noHost.ok, false);
+  assert.equal(noHost.error.code, "INVALID_PARAMS");
+  const noPort = await call("quolldesk:mssql:connect", { hostname: "sql" });
+  assert.equal(noPort.ok, false);
+  const ping = await call("quolldesk:mssql:test", { hostname: "sql" });
+  assert.equal(ping.ok, false);
+  bridge._setDriverForTests(undefined);
+});
+
+test("test channel returns the server version and closes its probe pool", async () => {
+  const { fake, bridge, call } = setup();
+  const res = await call("quolldesk:mssql:test", CONNECT_OPTS);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.data.serverVersion, "Microsoft SQL Server 2022 (RTM-CU12) 16.0.4135.4");
+  assert.equal(typeof res.data.latencyMs, "number");
+  assert.equal(fake.state.pools[0].closed, true, "probe pool must be closed");
+  assert.equal(registry.size(), 0, "test channel must not register a connection");
+  bridge._setDriverForTests(undefined);
+});
+
+test("schemaTree: single round trip, schemas grouped with tables/views, system schemas excluded", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const queryCountBefore = fake.state.pools[0].queryLog.length;
+  fake.state.pools[0].respond = makeResponder({
+    listing: [
+      { schema_name: "dbo", table_name: "users", kind: "U" },
+      { schema_name: "dbo", table_name: "v_orders", kind: "V" },
+      { schema_name: "app", table_name: null, kind: null },
+    ],
+  });
+  const tree = await call("quolldesk:mssql:schemaTree", { connectionId });
+  assert.equal(tree.ok, true, JSON.stringify(tree));
+  assert.deepEqual(tree.data.databases, [
+    { name: "dbo", tables: ["users"], views: ["v_orders"] },
+    { name: "app", tables: [], views: [] },
+  ]);
+  // Single round trip: exactly one query between connect and the tree result.
+  assert.equal(fake.state.pools[0].queryLog.length - queryCountBefore, 1);
+  const sql = fake.state.pools[0].queryLog[queryCountBefore].sql;
+  assert.ok(sql.startsWith("SELECT s.name AS schema_name"), sql);
+  for (const excluded of ["guest", "INFORMATION_SCHEMA", "sys", "db_owner", "db_denydatawriter"]) {
+    assert.ok(sql.includes(`'${excluded}'`), `excluded schema ${excluded} missing from: ${sql}`);
+  }
+  bridge._setDriverForTests(undefined);
+});
+
+test("tableMeta: columns, PK, indexes (PK index skipped), DDL, FKs, rowCount", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+  pool.respond = makeResponder({
+    columns: [
+      { COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null },
+      { COLUMN_NAME: "name", DATA_TYPE: "nvarchar", IS_NULLABLE: "YES", COLUMN_DEFAULT: null },
+    ],
+    pk: [{ constraint_name: "PK_users", column_name: "id" }],
+    indexes: [
+      { name: "idx_users_name", is_unique: false, is_primary_key: false, type_desc: "NONCLUSTERED", column_name: "name", key_ordinal: 1 },
+      { name: "PK__users", is_unique: true, is_primary_key: true, type_desc: "CLUSTERED", column_name: "id", key_ordinal: 1 },
+    ],
+    ddl: { "dbo.users": "CREATE TABLE [dbo].[users] (\n  [id] INT NOT NULL,\n  [name] NVARCHAR(80)\n)" },
+    rowCount: 42,
+    fks: [{ name: "FK_users_org", column_name: "org_id", ref_column: "id", ref_table: "orgs", ref_schema: "dbo" }],
+  });
+  const meta = await call("quolldesk:mssql:tableMeta", { connectionId, table: "users", schema: "dbo" });
+  assert.equal(meta.ok, true, JSON.stringify(meta));
+  assert.deepEqual(meta.data.columns, [
+    { name: "id", type: "int", nullable: false, key: "PRI", defaultValue: null },
+    { name: "name", type: "nvarchar", nullable: true, key: null, defaultValue: null },
+  ]);
+  assert.deepEqual(meta.data.primaryKey, { name: "PK_users", columns: ["id"] });
+  // The PK-backed index (is_primary_key=1) must be skipped — no duplicate of primaryKey.
+  assert.deepEqual(meta.data.indexes, [{ name: "idx_users_name", columns: ["name"], unique: false, method: "NONCLUSTERED" }]);
+  assert.match(meta.data.ddl, /^CREATE TABLE \[dbo\]\.\[users\]/);
+  assert.deepEqual(meta.data.foreignKeys, [
+    { column: "org_id", refTable: "orgs", refSchema: "dbo", refColumn: "id" },
+  ]);
+  assert.equal(meta.data.rowCountEstimate, 42);
+
+  // Six queries: columns, PK, indexes, DDL, rowCount, FKs — each parameterized.
+  const sqls = pool.queryLog.map((q) => q.sql);
+  assert.equal(sqls.length, 6);
+  assert.match(sqls[0], /INFORMATION_SCHEMA\.COLUMNS/);
+  assert.equal(pool.queryLog[0].parameters.s, "dbo");
+  assert.equal(pool.queryLog[0].parameters.t, "users");
+  assert.match(sqls[1], /TABLE_CONSTRAINTS/);
+  assert.match(sqls[2], /sys\.indexes/);
+  assert.equal(pool.queryLog[2].parameters.qualified, "dbo.users");
+  assert.match(sqls[3], /sys\.sql_modules/);
+  assert.match(sqls[4], /sys\.partitions/);
+  assert.match(sqls[5], /sys\.foreign_keys/);
+
+  // No schema → SCHEMA_NAME() + bare-table OBJECT_ID.
+  pool.queryLog.length = 0;
+  const noSchema = await call("quolldesk:mssql:tableMeta", { connectionId, table: "users" });
+  assert.equal(noSchema.ok, true);
+  assert.match(pool.queryLog[0].sql, /SCHEMA_NAME\(\)/);
+  assert.equal(pool.queryLog[2].parameters.qualified, "users");
+  bridge._setDriverForTests(undefined);
+});
+
+test("tableRows: OFFSET/FETCH paging, ORDER BY, grid filters bound as @p placeholders", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+  pool.respond = makeResponder({ page: () => [{ id: 1, name: "alpha" }, { id: 2, name: "beta" }] });
+
+  const page = await call("quolldesk:mssql:tableRows", {
+    connectionId, table: "users", schema: "dbo",
+    orderBy: "id", orderDir: "desc", offset: 20, limit: 100,
+    filters: [
+      { column: "name", op: "like", value: "alp" },
+      { column: "age", op: "eq", value: "30" },
+      { column: "deleted_at", op: "nul" },
+    ],
+  });
+  assert.equal(page.ok, true, JSON.stringify(page));
+  assert.deepEqual(page.data.columns, [{ name: "id" }, { name: "name" }]);
+  assert.deepEqual(page.data.rows, [["1", "alpha"], ["2", "beta"]]);
+  assert.equal(page.data.truncated, false);
+
+  const q = pool.queryLog[0];
+  assert.equal(
+    q.sql,
+    "SELECT * FROM [dbo].[users] WHERE [name] LIKE @p1 AND [age] = @p2 AND [deleted_at] IS NULL" +
+    " ORDER BY [id] DESC OFFSET 20 ROWS FETCH NEXT 100 ROWS ONLY",
+    q.sql,
+  );
+  assert.deepEqual(q.parameters, { p1: "%alp%", p2: "30" });
+
+  // No orderBy → ORDER BY (SELECT NULL); bare table without schema.
+  pool.queryLog.length = 0;
+  await call("quolldesk:mssql:tableRows", { connectionId, table: "users" });
+  const q2 = pool.queryLog[0];
+  assert.equal(q2.sql, "SELECT * FROM [users] ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY", q2.sql);
+  assert.deepEqual(q2.parameters, {});
+  bridge._setDriverForTests(undefined);
+});
+
+test("applyTableChanges: single transaction (begin → statements → commit), rollback on failure", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+  const applied = await call("quolldesk:mssql:applyTableChanges", {
+    connectionId, table: "users", schema: "dbo",
+    changes: {
+      updates: [{ pk: "id", pkValue: 1, column: "name", value: "ALPHA" }],
+      inserts: [{ values: { id: 10, name: "delta" } }],
+      deletes: [{ pk: "id", pkValue: 2 }],
+    },
+  });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.deepEqual(applied.data.applied, { updates: 1, inserts: 1, deletes: 1 });
+  assert.equal(pool.transactions.length, 1);
+  const tx = pool.transactions[0];
+  assert.deepEqual(tx.events, ["begin", "commit"]);
+  const stmts = pool.queryLog.filter((q) => q.onTx);
+  assert.equal(stmts.length, 3);
+  assert.equal(stmts[0].sql, "UPDATE [dbo].[users] SET [name] = @v WHERE [id] = @pkv");
+  assert.deepEqual(stmts[0].parameters, { v: "ALPHA", pkv: "1" });
+  assert.equal(stmts[1].sql, "INSERT INTO [dbo].[users] ([id], [name]) VALUES (@p1, @p2)");
+  assert.deepEqual(stmts[1].parameters, { p1: "10", p2: "delta" });
+  assert.equal(stmts[2].sql, "DELETE FROM [dbo].[users] WHERE [id] = @pkv");
+  assert.deepEqual(stmts[2].parameters, { pkv: "2" });
+
+  // Failure → rollback, error envelope.
+  pool.queryLog.length = 0;
+  pool.transactions.length = 0;
+  pool.respond = (sql) => (sql.includes("INSERT")
+    ? { __error: true, error: new Error("Violation of PRIMARY KEY constraint 'PK_users'") }
+    : { recordsets: [], rowsAffected: [1] });
+  const failed = await call("quolldesk:mssql:applyTableChanges", {
+    connectionId, table: "users", schema: "dbo",
+    changes: {
+      updates: [{ pk: "id", pkValue: 1, column: "name", value: "X" }],
+      inserts: [{ values: { id: 1, name: "dup" } }],
+    },
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error.message, /PRIMARY KEY constraint/);
+  assert.deepEqual(pool.transactions[0].events, ["begin", "rollback"]);
+  bridge._setDriverForTests(undefined);
+});
+
+test("query: recordsets map to resultSets, rowsAffected aggregate to a trailing set, timeout + @p values", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+
+  // Two SELECT recordsets.
+  pool.respond = () => ({ recordsets: [[{ id: 1 }], [{ n: "x" }]], rowsAffected: [1, 1] });
+  const multi = await call("quolldesk:mssql:query", { connectionId, sql: "SELECT 1 AS id; SELECT 'x' AS n" });
+  assert.equal(multi.ok, true, JSON.stringify(multi));
+  assert.equal(multi.data.resultSets.length, 2);
+  assert.deepEqual(multi.data.resultSets[0].columns, [{ name: "id" }]);
+  assert.deepEqual(multi.data.resultSets[0].rows, [["1"]]);
+  assert.deepEqual(multi.data.resultSets[1].columns, [{ name: "n" }]);
+  assert.deepEqual(multi.data.resultSets[1].rows, [["x"]]);
+
+  // Pure DML: no recordsets → one synthetic trailing result set with the aggregate.
+  pool.respond = () => ({ recordsets: [], rowsAffected: [2, 3] });
+  const dml = await call("quolldesk:mssql:query", { connectionId, sql: "UPDATE t SET x=1; UPDATE u SET y=2" });
+  assert.deepEqual(dml.data.resultSets, [{ columns: [], rows: [], affectedRows: 5, truncated: false }]);
+
+  // Default timeout 30s; explicit timeout forwarded; >120s clamped.
+  pool.respond = () => ({ recordsets: [], rowsAffected: [1] });
+  await call("quolldesk:mssql:query", { connectionId, sql: "UPDATE t SET x=1" });
+  assert.equal(pool.queryLog[pool.queryLog.length - 1].overrides.requestTimeout, 30000);
+  await call("quolldesk:mssql:query", { connectionId, sql: "UPDATE t SET x=1", timeoutMs: 45000 });
+  assert.equal(pool.queryLog[pool.queryLog.length - 1].overrides.requestTimeout, 45000);
+  await call("quolldesk:mssql:query", { connectionId, sql: "UPDATE t SET x=1", timeoutMs: 500000 });
+  assert.equal(pool.queryLog[pool.queryLog.length - 1].overrides.requestTimeout, 120000);
+
+  // values → @p1..@pN inputs.
+  pool.respond = makeResponder({ page: () => [{ v: "a" }] });
+  const withValues = await call("quolldesk:mssql:query", { connectionId, sql: "SELECT @p1 AS v", values: ["a"] });
+  assert.equal(withValues.ok, true);
+  assert.deepEqual(pool.queryLog[pool.queryLog.length - 1].parameters, { p1: "a" });
+  bridge._setDriverForTests(undefined);
+});
+
+test("backup (table scope): OBJECT_ID drop guard, sql_modules DDL, PK keyset pages, bracket-quoted INSERTs, dialect push", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call, { database: "appdb" });
+  const pool = fake.state.pools[0];
+  const page1 = Array.from({ length: 500 }, (_, i) => ({ id: i + 1, name: `n${i}` }));
+  const page2 = [{ id: 501, name: "O'Brien" }, { id: 502, name: "a\\b" }];
+  pool.respond = makeResponder({
+    listing: [
+      { schema_name: "dbo", table_name: "users", kind: "U" },
+      { schema_name: "dbo", table_name: "v_orders", kind: "V" },
+      { schema_name: "app", table_name: "log", kind: "U" },
+    ],
+    pk: [{ constraint_name: "PK_users", column_name: "id" }],
+    ddl: {
+      "dbo.users": "CREATE TABLE [dbo].[users] (\n  [id] INT NOT NULL,\n  [name] NVARCHAR(80)\n)",
+    },
+    page: (sql) => (sql.includes(" WHERE ") ? page2 : page1),
+  });
+  const outFile = tmpSqlFile("backup");
+  try {
+    const res = await call("quolldesk:mssql:backup", { connectionId, scope: "table", schema: "dbo", table: "users", includeData: true, outFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    const done = await waitForPush(pushes, "done");
+    assert.equal(done.dialect, "mssql");
+    const dump = fs.readFileSync(outFile, "utf8");
+    assert.ok(dump.includes("-- Dialect: mssql"), dump.slice(0, 400));
+    assert.ok(dump.includes("-- Scope: table dbo.users"), dump.slice(0, 400));
+    assert.ok(dump.includes("IF OBJECT_ID(N'[dbo].[users]', 'U') IS NOT NULL DROP TABLE [dbo].[users];"), dump);
+    assert.ok(dump.includes("CREATE TABLE [dbo].[users]"), dump);
+    assert.ok(dump.includes("INSERT INTO [dbo].[users] ([id], [name]) VALUES"), dump);
+    assert.ok(dump.includes("(1, 'n0')"), dump);
+    assert.ok(dump.includes("(501, 'O''Brien')"), dump);
+    assert.ok(dump.includes("(502, 'a\\b')"), dump, "mssql reads backslashes literally — no doubling");
+    assert.ok(!dump.includes("app"), "table scope must not dump other schemas' tables");
+
+    // Keyset paging: second page resumes after the last PK value.
+    const pageSqls = pool.queryLog.filter((q) => q.sql.includes("SELECT * FROM")).map((q) => q.sql);
+    assert.equal(pageSqls.length, 2);
+    assert.equal(
+      pageSqls[0],
+      "SELECT * FROM [dbo].[users] ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+      pageSqls[0],
+    );
+    assert.equal(
+      pageSqls[1],
+      "SELECT * FROM [dbo].[users] WHERE ([id]) > (500) ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+      pageSqls[1],
+    );
+    assert.ok(!pool.queryLog.some((q) => q.sql.includes("v_orders") && q.sql.includes("SELECT definition")), "table scope skips views");
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(outFile, () => {});
+  }
+});
+
+test("backup (database scope, DDL only): tables then views from sys.sql_modules", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call, { database: "appdb" });
+  const pool = fake.state.pools[0];
+  pool.respond = makeResponder({
+    listing: [
+      { schema_name: "dbo", table_name: "users", kind: "U" },
+      { schema_name: "dbo", table_name: "v_orders", kind: "V" },
+      { schema_name: "app", table_name: "log", kind: "U" },
+    ],
+    ddl: {
+      "dbo.users": "CREATE TABLE [dbo].[users] (\n  [id] INT NOT NULL\n)",
+      "app.log": "CREATE TABLE [app].[log] (\n  [msg] NVARCHAR(MAX)\n)",
+      "dbo.v_orders": "CREATE VIEW [dbo].[v_orders] AS SELECT * FROM [dbo].[users]",
+    },
+  });
+  const outFile = tmpSqlFile("backup-ddl");
+  try {
+    const res = await call("quolldesk:mssql:backup", { connectionId, scope: "database", includeData: false, outFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    await waitForPush(pushes, "done");
+    const dump = fs.readFileSync(outFile, "utf8");
+    assert.ok(dump.includes("DROP TABLE [dbo].[users];"), dump);
+    assert.ok(dump.includes("CREATE TABLE [dbo].[users]"), dump);
+    assert.ok(dump.includes("DROP TABLE [app].[log];"), dump);
+    assert.ok(dump.includes("CREATE TABLE [app].[log]"), dump);
+    assert.ok(!dump.includes("INSERT INTO"), "includeData=false must skip data pages");
+    // View block comes after every table block.
+    const usersIdx = dump.indexOf("CREATE TABLE [dbo].[users]");
+    const logIdx = dump.indexOf("CREATE TABLE [app].[log]");
+    const viewIdx = dump.indexOf("DROP VIEW [dbo].[v_orders]");
+    const viewDefIdx = dump.indexOf("CREATE VIEW [dbo].[v_orders]");
+    assert.ok(usersIdx >= 0 && logIdx >= 0 && viewIdx > logIdx && viewDefIdx > viewIdx, dump);
+    assert.ok(dump.includes("IF OBJECT_ID(N'[dbo].[v_orders]', 'V') IS NOT NULL DROP VIEW [dbo].[v_orders];"), dump);
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(outFile, () => {});
+  }
+});
+
+test("restore: splitSqlStatements mssql mode + sequential exec with dialect pushes", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+  const executed = [];
+  pool.respond = (sql) => { executed.push(sql); return { recordsets: [], rowsAffected: [1] }; };
+  const inFile = tmpSqlFile("restore");
+  const script = [
+    "-- QuollDesk dump header",
+    "IF OBJECT_ID(N'[t]', 'U') IS NOT NULL DROP TABLE [t];",
+    "INSERT INTO [t] VALUES ('a;b');", // `;` inside the string must not split
+  ].join("\n");
+  try {
+    fs.writeFileSync(inFile, script, "utf8");
+    const res = await call("quolldesk:mssql:restore", { connectionId, inFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    const done = await waitForPush(pushes, "done");
+    assert.equal(done.dialect, "mssql");
+    assert.match(done.message, /2 statements executed/);
+    // readOnlySql's mssql splitter keeps in-statement comment text (T-SQL
+    // executes leading `--` comments fine); `;` inside a string never splits.
+    assert.deepEqual(executed, [
+      "-- QuollDesk dump header\nIF OBJECT_ID(N'[t]', 'U') IS NOT NULL DROP TABLE [t]",
+      "INSERT INTO [t] VALUES ('a;b')",
+    ]);
+    const progress = pushes.find((p) => p.phase === "restore");
+    assert.equal(progress.dialect, "mssql");
+    assert.equal(progress.total, 2);
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(inFile, () => {});
+  }
+});
+
+test("runLimitedQuery: runs one statement and truncates rows at maxRows (default 200)", async () => {
+  const { fake, bridge, call } = setup();
+  const connectionId = await connect(call);
+  const pool = fake.state.pools[0];
+  const rows250 = Array.from({ length: 250 }, (_, i) => ({ id: i + 1, name: `r${i}` }));
+  pool.respond = makeResponder({ page: () => rows250 });
+  const { runLimitedQuery } = bridge;
+
+  const limited = await runLimitedQuery(pool, "SELECT * FROM big");
+  assert.equal(limited.rows.length, 200, "default maxRows is 200");
+  assert.equal(limited.truncated, true);
+  assert.equal(limited.rowCount, 250);
+  assert.deepEqual(limited.columns, [{ name: "id" }, { name: "name" }]);
+  assert.deepEqual(limited.rows[0], ["1", "r0"]);
+
+  const capped = await runLimitedQuery(pool, "SELECT * FROM big", 10);
+  assert.equal(capped.rows.length, 10);
+  assert.equal(capped.truncated, true);
+
+  const small = await runLimitedQuery(pool, "SELECT * FROM big", 300);
+  assert.equal(small.rows.length, 250);
+  assert.equal(small.truncated, false);
+  bridge._setDriverForTests(undefined);
+});
+
+test("pickBackupPath / pickRestoreFile use the injected dialog", async () => {
+  const { bridge, call } = setup();
+  const fakeDialog = {
+    showSaveDialog: async (_owner, opts) => {
+      assert.deepEqual(opts.filters, [{ name: "SQL", extensions: ["sql"] }]);
+      return { canceled: false, filePath: "/picked/out.sql" };
+    },
+    showOpenDialog: async (_owner, opts) => {
+      assert.ok(opts.properties.includes("openFile"));
+      return { canceled: false, filePaths: ["/picked/dump.sql"] };
+    },
+  };
+  bridge._setDialogForTests(fakeDialog);
+  try {
+    const backupPath = await call("quolldesk:mssql:pickBackupPath", { defaultName: "dump.sql" });
+    assert.equal(backupPath.ok, true, JSON.stringify(backupPath));
+    assert.equal(backupPath.data.path, "/picked/out.sql");
+    const restoreFile = await call("quolldesk:mssql:pickRestoreFile");
+    assert.equal(restoreFile.ok, true, JSON.stringify(restoreFile));
+    assert.equal(restoreFile.data.path, "/picked/dump.sql");
+  } finally {
+    bridge._setDialogForTests(null);
+  }
+  bridge._setDriverForTests(undefined);
+});

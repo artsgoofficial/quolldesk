@@ -98,6 +98,7 @@ function createBridgeRegistrarForTest({
     pgDbBridge: noopBridge,
     mariadbDbBridge: noopBridge,
     sqliteDbBridge: noopBridge,
+    mssqlDbBridge: noopBridge,
     terminalBridge: terminalBridge || { ...noopBridge, execOnEtSession() {} },
     crashLogBridge: noopBridge,
     ptyProcessTree: { getChildProcesses: () => [] },

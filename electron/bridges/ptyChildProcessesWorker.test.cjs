@@ -76,6 +76,7 @@ function createMainHandler(t, { mode = "worker" } = {}) {
     pgDbBridge: noopBridge,
     mariadbDbBridge: noopBridge,
     sqliteDbBridge: noopBridge,
+    mssqlDbBridge: noopBridge,
     terminalBridge: {
       ...noopBridge,
       execOnEtSession() {},

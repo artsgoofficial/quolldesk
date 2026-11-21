@@ -98,6 +98,7 @@ function createBridgeRegistrar(context) {
     mysqlDbBridge,
     pgDbBridge,
     mariadbDbBridge,
+    sqliteDbBridge,
     terminalBridge,
     crashLogBridge,
     ptyProcessTree,
@@ -505,6 +506,7 @@ function createBridgeRegistrar(context) {
     mysqlDbBridge.registerHandlers(ipcMain, {});
     pgDbBridge.registerHandlers(ipcMain, {});
     mariadbDbBridge.registerHandlers(ipcMain, {});
+    sqliteDbBridge.registerHandlers(ipcMain, {});
     // One shared close listener (the registry is process-wide): pushes
     // quolldesk:db:connectionClosed to the owning renderer on closes it cannot
     // know about (idle reap, driver death) so the workbench tab flips to
@@ -523,6 +525,7 @@ function createBridgeRegistrar(context) {
       mysqlDbBridge.closeAllForSender(senderId);
       pgDbBridge.closeAllForSender(senderId);
       mariadbDbBridge.closeAllForSender(senderId);
+      sqliteDbBridge.closeAllForSender(senderId);
     };
     const wc = win?.webContents;
     const dbSenderId = wc?.id;

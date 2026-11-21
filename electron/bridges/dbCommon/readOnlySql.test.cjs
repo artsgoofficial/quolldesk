@@ -70,3 +70,24 @@ test("readOnlyTransaction scripts block writes at the engine level", () => {
   assert.deepEqual(readOnlyTransaction("mysql"), { begin: "START TRANSACTION READ ONLY", end: "ROLLBACK" });
   assert.deepEqual(readOnlyTransaction("postgresql"), { begin: "BEGIN READ ONLY", end: "ROLLBACK" });
 });
+
+test('readonly keywords per new dialect', () => {
+  assert.equal(validateReadOnlySql('mariadb', 'SELECT 1').ok, true);
+  assert.equal(validateReadOnlySql('sqlite', 'PRAGMA table_info(t)').ok, true);
+  assert.equal(validateReadOnlySql('sqlite', 'INSERT INTO t VALUES (1)').ok, false);
+  assert.equal(validateReadOnlySql('mssql', 'SELECT TOP 1 * FROM t').ok, true);
+  assert.equal(validateReadOnlySql('mssql', 'EXEC dbo.do').ok, false);
+});
+test('split: mssql brackets keep semicolons inside identifiers', () => {
+  const out = splitSqlStatements('SELECT [a;b] FROM t; SELECT 2;', 'mssql');
+  assert.equal(out.length, 2);
+  assert.match(out[0], /\[a;b\]/);
+});
+test('split: sqlite backslash is literal', () => {
+  const out = splitSqlStatements("SELECT 'a\\';'; SELECT 2;", 'sqlite');
+  assert.equal(out.length, 2);
+});
+test('readOnlyTransaction: mssql/sqlite BEGIN/ROLLBACK', () => {
+  assert.deepEqual(readOnlyTransaction('mssql'), { begin: 'BEGIN TRANSACTION', end: 'ROLLBACK' });
+  assert.deepEqual(readOnlyTransaction('sqlite'), { begin: 'BEGIN', end: 'ROLLBACK' });
+});

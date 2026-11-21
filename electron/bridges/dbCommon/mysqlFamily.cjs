@@ -573,7 +573,7 @@ function createMysqlFamilyBridge({ channel, dialect }) {
       const statements = splitSqlStatements(text, { backslashEscapes: true });
       registry.touchConnection(connectionId);
       void runSequentialRestore({
-        event, jobId: job.jobId, dialect: "mysql", statements,
+        event, jobId: job.jobId, dialect, statements,
         // affectedRows intentionally not counted/reported
         exec: (statement) => runWrite(entry.client.conn, statement),
       }).finally(job.release);

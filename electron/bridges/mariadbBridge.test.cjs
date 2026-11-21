@@ -236,3 +236,46 @@ test("backup progress and dump header carry the mariadb dialect", async () => {
     fs.unlink(outFile, () => {});
   }
 });
+
+test("restore jobProgress carries the mariadb dialect and executes statements sequentially", async () => {
+  const { bridge, pushes, call } = setup(mariadbBridge);
+  const conn = await call("quolldesk:mariadb:connect", { ...CONNECT_OPTS, config: { database: "app" } });
+  const { connectionId } = conn.data;
+  const entry = registry.getConnection(connectionId);
+  const executed = [];
+  entry.client.conn.query = (sqlOrObj) => {
+    executed.push(typeof sqlOrObj === "string" ? sqlOrObj : sqlOrObj.sql);
+    const emitter = new EventEmitter();
+    setImmediate(() => {
+      emitter.emit("result", { affectedRows: 1 });
+      emitter.emit("end");
+    });
+    return emitter;
+  };
+  const inFile = tmpSqlFile("restore");
+  const script = [
+    "-- QuollDesk dump header",
+    "DROP TABLE IF EXISTS `t`;",
+    "INSERT INTO `t` VALUES ('a;b');", // `;` inside the string must not split
+  ].join("\n");
+  try {
+    fs.writeFileSync(inFile, script, "utf8");
+    const res = await call("quolldesk:mariadb:restore", { connectionId, inFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    const done = await waitForPush(pushes, "done");
+    // The family's dialect parameter must reach runSequentialRestore's pushes.
+    assert.equal(done.dialect, "mariadb");
+    assert.match(done.message, /2 statements executed/);
+    assert.deepEqual(executed, [
+      "DROP TABLE IF EXISTS `t`",
+      "INSERT INTO `t` VALUES ('a;b')",
+    ]);
+    const progress = pushes.find((p) => p.phase === "restore");
+    assert.equal(progress.dialect, "mariadb");
+    assert.equal(progress.total, 2);
+  } finally {
+    await call("quolldesk:mariadb:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(inFile, () => {});
+  }
+});

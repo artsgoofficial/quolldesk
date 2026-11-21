@@ -54,7 +54,7 @@ export const SQL_ENGINE_BY_ID: Readonly<Record<SqlEngineId, SqlEngineDescriptor>
   Object.fromEntries(SQL_ENGINES.map((e) => [e.id, e])) as Readonly<Record<SqlEngineId, SqlEngineDescriptor>>;
 
 export const isSqlEngineId = (p: unknown): p is SqlEngineId =>
-  typeof p === 'string' && p in SQL_ENGINE_BY_ID;
+  typeof p === 'string' && Object.hasOwn(SQL_ENGINE_BY_ID, p);
 
 /** 标识符引用:mysql/mariadb 反引号、pg/sqlite 双引号、mssql 方括号(成对闭合)。 */
 export const sqlQuoteIdent = (engine: SqlEngineId, ident: string): string => {

@@ -34,3 +34,14 @@ test('db protocol: new engines recognized and sectioned', () => {
   ] as never[];
   assert.equal(hostsForDbSection(hosts, 'databases').length, 3);
 });
+
+test('registry: isSqlEngineId rejects inherited Object.prototype keys', () => {
+  // SQL_ENGINE_BY_ID is built with Object.fromEntries (plain prototype);
+  // `in` would let 'constructor'/'toString'/'__proto__' pass the guard.
+  assert.equal(isSqlEngineId('constructor'), false);
+  assert.equal(isSqlEngineId('toString'), false);
+  assert.equal(isSqlEngineId('__proto__'), false);
+  assert.equal(isSqlEngineId('hasOwnProperty'), false);
+  assert.equal(isSqlEngineId('mysql'), true);
+  assert.equal(isSqlEngineId('sqlite'), true);
+});

@@ -5,6 +5,7 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { DbGridFilter, DbPendingUpdate, SqlForeignKeyMeta } from '@/types/global/quolldesk-bridge-database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { toast } from '../ui/toast';
 import { Button } from '../ui/button';
 import { downloadCsv, downloadInserts, downloadJson } from './csv';
@@ -12,7 +13,7 @@ import SqlImportWizard from './SqlImportWizard';
 
 interface SqlTableDataProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   table: string | null;
   schema?: string;
   refreshToken?: number;

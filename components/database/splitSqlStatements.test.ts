@@ -115,3 +115,64 @@ test('keeps internal newlines of a statement intact', () => {
 test('single statement without trailing semicolon is returned whole', () => {
   assert.deepEqual(splitSqlStatements('  SELECT 20  ', 'postgresql'), ['SELECT 20']);
 });
+
+// ——— mariadb shares the mysql lexer (hash comments, backslash escapes) ———
+
+test('mariadb hash comment swallows semicolons until newline', () => {
+  assert.deepEqual(
+    splitSqlStatements('SELECT 9 # note; here\n; SELECT 10', 'mariadb'),
+    ['SELECT 9 # note; here', 'SELECT 10'],
+  );
+});
+
+test('mariadb backslash escape keeps one string literal', () => {
+  assert.deepEqual(
+    splitSqlStatements("SELECT 'a\\';b'; SELECT 4", 'mariadb'),
+    ["SELECT 'a\\';b'", 'SELECT 4'],
+  );
+});
+
+// ——— mssql: bracketed identifiers never produce a split ———
+
+test('bracketed identifier with semicolon stays one statement', () => {
+  assert.deepEqual(
+    splitSqlStatements('SELECT [a;b] FROM t; SELECT 21', 'mssql'),
+    ['SELECT [a;b] FROM t', 'SELECT 21'],
+  );
+});
+
+test('doubled closing bracket escape keeps one bracketed identifier', () => {
+  assert.deepEqual(
+    splitSqlStatements('SELECT [weird]]name;ok] FROM t; SELECT 22', 'mssql'),
+    ['SELECT [weird]]name;ok] FROM t', 'SELECT 22'],
+  );
+});
+
+test('mssql # is not a line comment', () => {
+  assert.deepEqual(
+    splitSqlStatements('SELECT 23 # note; SELECT 24', 'mssql'),
+    ['SELECT 23 # note', 'SELECT 24'],
+  );
+});
+
+test('sqlite does not treat # as a comment or split dollar quotes', () => {
+  // No mysql-family hash comments off the mysql family...
+  assert.deepEqual(
+    splitSqlStatements('SELECT 25 # note; SELECT 26', 'sqlite'),
+    ['SELECT 25 # note', 'SELECT 26'],
+  );
+  // ...and no pg dollar-quoting outside postgresql: an untagged $pair does not
+  // guard a semicolon ($$ only ever opens a dollar-quote on pg).
+  assert.deepEqual(
+    splitSqlStatements("SELECT $$a;b$$ AS v; SELECT 27", 'sqlite'),
+    ["SELECT $$a", "b$$ AS v", 'SELECT 27'],
+  );
+});
+
+test('pg dollar-quote stays postgresql-only', () => {
+  // mysql splits inside $$...$$ (it has no dollar quoting).
+  assert.deepEqual(
+    splitSqlStatements("SELECT $$a;b$$ AS v; SELECT 13", 'mysql'),
+    ['SELECT $$a', "b$$ AS v", 'SELECT 13'],
+  );
+});

@@ -33,3 +33,14 @@ test('table and view rows pass their own qualified target to the menu', () => {
   assert.match(source, /<SqlTableContextMenuContent[\s\S]*?\{\.\.\.tableMenu\}/);
   assert.match(source, /<SqlViewContextMenuContent[\s\S]*?\{\.\.\.viewMenu\}/);
 });
+
+// ——— engine-id threading (Task 9) ——————————————————————————————————————
+
+test('schema pass-through follows the registry schemaQualified flag (pg + mssql)', () => {
+  assert.match(source, /dialect: SqlEngineId/);
+  // One registry-driven check feeds all four row sites (table/view rows and
+  // their menu contents).
+  const schemaChecks = (source.match(/SQL_ENGINE_BY_ID\[dialect\]\?\.schemaQualified \? db\.name : undefined/g) ?? []).length;
+  assert.equal(schemaChecks, 4, `expected 4 registry-driven schema checks, found ${schemaChecks}`);
+  assert.ok(!source.includes("dialect === 'postgresql' ? db.name"), 'the pg-only check must be gone');
+});

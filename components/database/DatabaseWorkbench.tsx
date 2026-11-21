@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host, TerminalSession } from '../../domain/models';
 import { resolveDbSessionTabStatus } from '../../domain/models/database';
+import { SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
 import { useDatabaseWorkbenchState } from '../../application/state/useDatabaseWorkbenchState';
 import { Button } from '../ui/button';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -99,9 +100,9 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
 
   const isRedis = dialect === 'redis';
   const isCluster = isRedis && host.redisConfig?.cluster === true;
-  // The SQL views all take the non-redis dialect; narrow once here instead of
-  // re-coercing at every prop site.
-  const sqlDialect: 'mysql' | 'postgresql' = dialect === 'mysql' ? 'mysql' : 'postgresql';
+  // The SQL views all take the engine id (non-redis); narrow once here instead
+  // of re-coercing at every prop site. The pre-connection fallback stays 'postgresql'.
+  const sqlDialect: SqlEngineId = dialect === 'redis' ? 'postgresql' : dialect;
 
   // DB sessions bypass TerminalPane, so nothing else updates the session's
   // status — without this the top-tab dot stays on its initial 'connecting'.
@@ -207,21 +208,42 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
     setSelectedTable(object);
     setSelectedSchema(schema);
   };
+  // Menu capability gates (registry-driven): sqlite has no TRUNCATE and no
+  // database-node drop (the sqlIdent builders return null there); designer/
+  // backup entries follow the engine feature flags. Omitted handlers simply
+  // drop their menu items — nothing renders disabled.
+  const engineFeatures = SQL_ENGINE_BY_ID[sqlDialect].features;
+  const canDropDatabase = dropDatabase(sqlDialect, '') !== null;
+  const canTruncateTables = truncateTable(sqlDialect, undefined, '') !== null;
   const dbMenu: SqlDatabaseContextMenuHandlers = {
-    onNewTable: (name) => { selectDatabase(name); openDesigner(null); },
+    ...(engineFeatures.designer ? {
+      onNewTable: (name: string) => { selectDatabase(name); openDesigner(null); },
+    } : {}),
     onNewQuery: (name) => { selectDatabase(name); setSqlTab('query'); seedNewQuery(''); },
     onRefresh: bumpRefresh,
-    onBackup: (name) => { selectDatabase(name); setSqlView('backup'); },
-    onDrop: (name) => setTreeConfirm({
-      title: t('db.tree.menu.dropConfirmTitle', { name }),
-      message: t(sqlDialect === 'postgresql' ? 'db.tree.menu.dropSchemaConfirmMsg' : 'db.tree.menu.dropDbConfirmMsg', { name }),
-      sql: dropDatabase(sqlDialect, name),
-      confirmLabel: t('db.tree.menu.confirmDrop'),
-    }),
+    ...(engineFeatures.backupRestore ? {
+      onBackup: (name: string) => { selectDatabase(name); setSqlView('backup'); },
+    } : {}),
+    ...(canDropDatabase ? {
+      onDrop: (name: string) => {
+        const sql = dropDatabase(sqlDialect, name);
+        if (!sql) return;
+        setTreeConfirm({
+          title: t('db.tree.menu.dropConfirmTitle', { name }),
+          // Tree top-level nodes are schemas on schema-qualified engines
+          // (pg CASCADE / mssql) and databases on the mysql family.
+          message: t(SQL_ENGINE_BY_ID[sqlDialect].schemaQualified ? 'db.tree.menu.dropSchemaConfirmMsg' : 'db.tree.menu.dropDbConfirmMsg', { name }),
+          sql,
+          confirmLabel: t('db.tree.menu.confirmDrop'),
+        });
+      },
+    } : {}),
   };
   const tableMenu: SqlObjectContextMenuHandlers = {
     onOpenData: (table, schema) => { selectObject(table, schema); setSqlTab('data'); },
-    onDesign: (table, schema) => { selectObject(table, schema); openDesigner(table); },
+    ...(engineFeatures.designer ? {
+      onDesign: (table: string, schema?: string) => { selectObject(table, schema); openDesigner(table); },
+    } : {}),
     onOpenStructure: (table, schema) => { selectObject(table, schema); setSqlTab('structure'); },
     onNewQuery: (table, schema) => {
       selectObject(table, schema);
@@ -229,12 +251,18 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
       seedNewQuery(seedSelect(sqlDialect, schema, table));
     },
     onCopyName: copyName,
-    onTruncate: (table, schema) => setTreeConfirm({
-      title: t('db.tree.menu.truncateConfirmTitle', { name: table }),
-      message: t('db.tree.menu.truncateConfirmMsg', { name: table }),
-      sql: truncateTable(sqlDialect, schema, table),
-      confirmLabel: t('db.tree.menu.confirmTruncate'),
-    }),
+    ...(canTruncateTables ? {
+      onTruncate: (table: string, schema?: string) => {
+        const sql = truncateTable(sqlDialect, schema, table);
+        if (!sql) return;
+        setTreeConfirm({
+          title: t('db.tree.menu.truncateConfirmTitle', { name: table }),
+          message: t('db.tree.menu.truncateConfirmMsg', { name: table }),
+          sql,
+          confirmLabel: t('db.tree.menu.confirmTruncate'),
+        });
+      },
+    } : {}),
     onRename: (object, schema) => setRenameTarget({ object, schema, kind: 'table' }),
     onDrop: (object, schema) => setTreeConfirm({
       title: t('db.tree.menu.dropConfirmTitle', { name: object }),

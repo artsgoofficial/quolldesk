@@ -3,13 +3,14 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { normalizeHeaderKey, parseCsv } from '../../domain/vaultImport/csvUtils';
 import { Button } from '../ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
 
 interface SqlImportWizardProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   table: string;
   schema?: string;
   columns: string[];

@@ -4,13 +4,19 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
+import {
+  SQL_ENGINES,
+  SQL_ENGINE_BY_ID,
+  sqlQuoteIdent,
+  type SqlEngineId,
+} from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { toast } from '../ui/toast';
 
 interface SqlTableDesignerProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   schema?: string;
   /** Set to prefill from an existing table (edit mode); null = create mode. */
   editingTable?: string | null;
@@ -46,37 +52,51 @@ interface OriginalTable {
   pkConstraintName: string | null;
 }
 
-type Dialect = 'mysql' | 'postgresql';
+type Dialect = SqlEngineId;
 
 // Column-type quick-picks for the designer's type menu. The type input stays
 // free-text (bridge-reported types render verbatim), so this list only feeds
-// the picker — each dialect offers exactly what it supports (mysql has no
-// jsonb/uuid; pg has no datetime).
-export const COLUMN_TYPES: Record<Dialect, string[]> = {
-  mysql: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'],
-  postgresql: ['smallint', 'integer', 'bigint', 'numeric(10,2)', 'varchar(255)', 'text', 'date', 'timestamp', 'timestamptz', 'boolean', 'jsonb', 'uuid'],
-};
+// the picker — each engine offers exactly what it supports. Fed from the
+// SQL_ENGINES registry (values are the original per-dialect literals).
+export const COLUMN_TYPES: Record<Dialect, string[]> = Object.fromEntries(
+  SQL_ENGINES.map((e) => [e.id, e.columnTypes]),
+) as Record<Dialect, string[]>;
 
 // Dropdown choices for the index access method (USING clause). mysql deprecates
 // HASH outside MEMORY/NDB but accepts the syntax (server silently uses BTREE
 // on InnoDB); FULLTEXT/SPATIAL are separate index categories, not USING methods.
-const INDEX_METHODS: Record<Dialect, string[]> = {
-  mysql: ['BTREE', 'HASH'],
-  postgresql: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'],
+const INDEX_METHODS: Record<Dialect, string[]> = Object.fromEntries(
+  SQL_ENGINES.map((e) => [e.id, e.features.indexMethods]),
+) as Record<Dialect, string[]>;
+
+const DEFAULT_INDEX_METHOD: Record<Dialect, string> = {
+  mysql: 'BTREE',
+  mariadb: 'BTREE',
+  postgresql: 'btree',
+  mssql: 'NONCLUSTERED',
+  sqlite: '',
 };
 
-const DEFAULT_INDEX_METHOD: Record<Dialect, string> = { mysql: 'BTREE', postgresql: 'btree' };
+// Free-text type input fallback per engine (mysql-family shares varchar(255)).
+const DEFAULT_COLUMN_TYPE: Record<Dialect, string> = {
+  mysql: 'varchar(255)',
+  mariadb: 'varchar(255)',
+  postgresql: 'text',
+  mssql: 'nvarchar(255)',
+  sqlite: 'TEXT',
+};
 
-// Map a bridge-reported access method onto the dialect's dropdown value (pg
-// amname is lowercase, mysql Index_type uppercase); unknown values pass
-// through so a future server-side method still shows instead of degrading.
+// Map a bridge-reported access method onto the engine's dropdown value (pg
+// amname is lowercase, mysql Index_type uppercase, mssql syntax is uppercase);
+// unknown values pass through so a future server-side method still shows
+// instead of degrading.
 export const normalizeIndexMethod = (dialect: Dialect, raw?: string | null): string => {
   const v = (raw ?? '').trim();
   if (!v) return DEFAULT_INDEX_METHOD[dialect];
   return INDEX_METHODS[dialect].find((m) => m.toLowerCase() === v.toLowerCase()) ?? v;
 };
 
-// USING fragment value: empty for the dialect default (and empty drafts) so
+// USING fragment value: empty for the engine default (and empty drafts) so
 // existing default-method indexes diff clean, while an explicit method change
 // still triggers the drop+recreate walk.
 const effectiveIndexMethod = (dialect: Dialect, method: string): string => {
@@ -85,16 +105,14 @@ const effectiveIndexMethod = (dialect: Dialect, method: string): string => {
   return v;
 };
 
-const quoteIdent = (dialect: Dialect, id: string): string =>
-  dialect === 'mysql'
-    ? '`' + id.replace(/`/g, '``') + '`'
-    : '"' + id.replace(/"/g, '""') + '"';
+// Engine-wide identifier quoting (backticks / double quotes / brackets).
+const quoteIdent = (dialect: Dialect, id: string): string => sqlQuoteIdent(dialect, id);
 
 const parseIndexColumns = (raw: string): string[] =>
   raw.split(',').map((s) => s.trim()).filter(Boolean);
 
 const columnTypeOrDefault = (dialect: Dialect, type: string): string =>
-  type.trim() || (dialect === 'mysql' ? 'varchar(255)' : 'text');
+  type.trim() || DEFAULT_COLUMN_TYPE[dialect];
 
 // DEFAULT text passes through exactly as typed (0, CURRENT_TIMESTAMP, 'abc');
 // an unquoted string default is a syntax error the user sees in the preview —
@@ -108,6 +126,29 @@ const columnDefSql = (dialect: Dialect, col: DesignerColumn): string => {
 };
 
 const emptyColumn = (): DesignerColumn => ({ name: '', type: '', nullable: true, defaultValue: '', pk: false });
+
+/**
+ * CREATE INDEX with the engine's indexMethodStyle USING placement:
+ * mysql/mariadb put USING after the column list, pg between ON and the
+ * columns, tsql between UNIQUE and INDEX, 'none' (sqlite) never emits one.
+ */
+const buildIndexStatement = (
+  dialect: Dialect,
+  opts: { unique: boolean; name: string; tableRef: string; columns: string[]; method: string },
+): string => {
+  const q = (id: string) => quoteIdent(dialect, id);
+  const style = SQL_ENGINE_BY_ID[dialect].indexMethodStyle;
+  const using = style === 'none' ? '' : effectiveIndexMethod(dialect, opts.method);
+  const cols = opts.columns.map(q).join(', ');
+  const uniquePrefix = opts.unique ? 'UNIQUE ' : '';
+  if (style === 'tsql') {
+    return `CREATE ${uniquePrefix}${using ? `${using} ` : ''}INDEX ${q(opts.name)} ON ${opts.tableRef} (${cols})`;
+  }
+  if (style === 'pg') {
+    return `CREATE ${uniquePrefix}INDEX ${q(opts.name)} ON ${opts.tableRef}${using ? ` USING ${using}` : ''} (${cols})`;
+  }
+  return `CREATE ${uniquePrefix}INDEX ${q(opts.name)} ON ${opts.tableRef} (${cols})${using ? ` USING ${using}` : ''}`;
+};
 
 export const buildCreateTable = (
   dialect: Dialect,
@@ -126,8 +167,13 @@ export const buildCreateTable = (
   for (const idx of indexes) {
     const idxCols = parseIndexColumns(idx.columns);
     if (!idx.name.trim() || idxCols.length === 0) continue;
-    const using = effectiveIndexMethod(dialect, idx.method);
-    statements.push(`CREATE ${idx.unique ? 'UNIQUE ' : ''}INDEX ${q(idx.name.trim())} ON ${tableRef}${using ? ` USING ${using}` : ''} (${idxCols.map(q).join(', ')})`);
+    statements.push(buildIndexStatement(dialect, {
+      unique: idx.unique,
+      name: idx.name.trim(),
+      tableRef,
+      columns: idxCols,
+      method: idx.method,
+    }));
   }
   return statements.join(';\n') + ';';
 };
@@ -189,6 +235,9 @@ export const diffIndexes = (
  * - Single-column primary keys only (bridge-reported primaryKey).
  * - PG: removing the PK column together with a new PK in one run fails (the
  *   DROP COLUMN already removed the constraint, DROP CONSTRAINT errors).
+ *
+ * Reused verbatim for mariadb (getAlterBuilder): mariadb quoting is identical
+ * backticks and the type default matches mysql's.
  */
 export const buildAlterMysql = (
   table: string,
@@ -298,6 +347,172 @@ export const buildAlterPg = (
   return statements.length ? statements.join(';\n') + ';' : '';
 };
 
+// T-SQL ALTER walk. ADD/DROP COLUMN and ALTER COLUMN (type + restated
+// nullability) are supported; a default-value change on an existing column
+// is not (T-SQL ALTER COLUMN refuses to touch columns with default
+// constraints) and throws MSSQL_DEFAULT_UNSUPPORTED — the component catches
+// it and surfaces the localized message. PK changes go through named
+// constraints; index drops need the T-SQL `ON <table>` clause.
+export const buildAlterMssql = (
+  table: string,
+  original: OriginalTable,
+  cols: DesignerColumn[],
+  indexes: DesignerIndex[],
+  tableRef: string,
+): string => {
+  const q = (id: string) => quoteIdent('mssql', id);
+  const alter = (action: string) => `ALTER TABLE ${tableRef} ${action}`;
+  const statements: string[] = [];
+  const originalByName = new Map(original.columns.map((c) => [c.name, c]));
+  const currentNames = new Set(cols.map((c) => c.name.trim()).filter(Boolean));
+  const currentPk = cols.find((c) => c.pk && c.name.trim())?.name.trim() ?? null;
+  let pkDropped = false;
+  const dropPkIfNeeded = () => {
+    if (!pkDropped && original.pkColumn && original.pkConstraintName) {
+      statements.push(alter(`DROP CONSTRAINT ${q(original.pkConstraintName)}`));
+      pkDropped = true;
+    }
+  };
+  for (const col of cols) {
+    const name = col.name.trim();
+    if (!name) continue;
+    const before = originalByName.get(name);
+    if (!before) {
+      statements.push(alter(`ADD ${columnDefSql('mssql', col)}`));
+      continue;
+    }
+    if (before.defaultValue.trim() !== col.defaultValue.trim()) {
+      throw new Error('MSSQL_DEFAULT_UNSUPPORTED');
+    }
+    if (before.type !== col.type.trim() || before.nullable !== col.nullable) {
+      // T-SQL ALTER COLUMN restates the column: nullability rides on the type.
+      statements.push(alter(`ALTER COLUMN ${q(name)} ${columnTypeOrDefault('mssql', col.type)}${col.nullable ? ' NULL' : ' NOT NULL'}`));
+    }
+  }
+  for (const before of original.columns) {
+    if (currentNames.has(before.name)) continue;
+    if (before.name === original.pkColumn) dropPkIfNeeded();
+    statements.push(alter(`DROP COLUMN ${q(before.name)}`));
+  }
+  if (currentPk !== original.pkColumn) {
+    dropPkIfNeeded();
+    if (currentPk) statements.push(alter(`ADD CONSTRAINT ${q(`PK_${table}`)} PRIMARY KEY (${q(currentPk)})`));
+  }
+  statements.push(...diffIndexes(original.indexes, indexes, {
+    // tsql places the method between UNIQUE and INDEX; drops need ON <table>.
+    addIndex: ({ name, unique, columns, method }) =>
+      buildIndexStatement('mssql', { name, unique, columns, method, tableRef }),
+    dropIndex: (name) => `DROP INDEX ${q(name)} ON ${tableRef}`,
+    defaultMethod: DEFAULT_INDEX_METHOD.mssql,
+  }));
+  return statements.length ? statements.join(';\n') + ';' : '';
+};
+
+// SQLite ALTER walk: only ADD COLUMN / DROP COLUMN / CREATE INDEX / DROP
+// INDEX exist (and DROP COLUMN needs SQLite 3.35+, never for PK columns).
+// Everything else — column type/nullable/default edits, PK moves — requires
+// a table rebuild and throws SQLITE_COLUMN_REBUILD_REQUIRED (the component
+// blocks with the localized message before any DDL is built).
+export const buildAlterSqlite = (
+  table: string,
+  original: OriginalTable,
+  cols: DesignerColumn[],
+  indexes: DesignerIndex[],
+  tableRef: string,
+): string => {
+  const q = (id: string) => quoteIdent('sqlite', id);
+  const alter = (action: string) => `ALTER TABLE ${tableRef} ${action}`;
+  const statements: string[] = [];
+  const originalByName = new Map(original.columns.map((c) => [c.name, c]));
+  const currentNames = new Set(cols.map((c) => c.name.trim()).filter(Boolean));
+  const currentPk = cols.find((c) => c.pk && c.name.trim())?.name.trim() ?? null;
+  for (const col of cols) {
+    const name = col.name.trim();
+    if (!name) continue;
+    const before = originalByName.get(name);
+    if (!before) {
+      statements.push(alter(`ADD COLUMN ${columnDefSql('sqlite', col)}`));
+      continue;
+    }
+    if (
+      before.type !== col.type.trim()
+      || before.nullable !== col.nullable
+      || before.defaultValue.trim() !== col.defaultValue.trim()
+    ) {
+      throw new Error('SQLITE_COLUMN_REBUILD_REQUIRED');
+    }
+  }
+  if (currentPk !== original.pkColumn) throw new Error('SQLITE_COLUMN_REBUILD_REQUIRED');
+  for (const before of original.columns) {
+    if (currentNames.has(before.name)) continue;
+    // SQLite cannot drop a PRIMARY KEY column — that is a rebuild too.
+    if (before.name === original.pkColumn) throw new Error('SQLITE_COLUMN_REBUILD_REQUIRED');
+    statements.push(alter(`DROP COLUMN ${q(before.name)}`));
+  }
+  statements.push(...diffIndexes(original.indexes, indexes, {
+    // indexMethodStyle 'none': CREATE/DROP INDEX never carry a USING fragment.
+    addIndex: ({ name, unique, columns, method }) =>
+      buildIndexStatement('sqlite', { name, unique, columns, method, tableRef }),
+    dropIndex: (name) => `DROP INDEX ${q(name)}`,
+    defaultMethod: DEFAULT_INDEX_METHOD.sqlite,
+  }));
+  return statements.length ? statements.join(';\n') + ';' : '';
+};
+
+/** Per-engine ALTER dispatcher (mariadb shares the mysql builder). */
+export const getAlterBuilder = (engine: SqlEngineId) => {
+  if (engine === 'postgresql') return buildAlterPg;
+  if (engine === 'mssql') return buildAlterMssql;
+  if (engine === 'sqlite') return buildAlterSqlite;
+  return buildAlterMysql; // mysql | mariadb
+};
+
+/**
+ * Blocking unsupported edits BEFORE any DDL is built: sqlite column edits /
+ * PK moves need a rebuild, mssql default edits are unsupported in v1. The
+ * returned value is an i18n key (db.designer.*) — the component toasts it and
+ * skips regeneration. Supported engines (mysql family, pg) never block.
+ */
+export const designerBlockedReason = (
+  engine: SqlEngineId,
+  original: OriginalTable,
+  cols: DesignerColumn[],
+): string | null => {
+  const originalByName = new Map(original.columns.map((c) => [c.name, c]));
+  const currentNames = new Set(cols.map((c) => c.name.trim()).filter(Boolean));
+  const currentPk = cols.find((c) => c.pk && c.name.trim())?.name.trim() ?? null;
+  if (engine === 'sqlite') {
+    for (const col of cols) {
+      const name = col.name.trim();
+      if (!name) continue;
+      const before = originalByName.get(name);
+      if (
+        before
+        && (before.type !== col.type.trim()
+          || before.nullable !== col.nullable
+          || before.defaultValue.trim() !== col.defaultValue.trim())
+      ) {
+        return 'db.designer.sqliteColumnRebuild';
+      }
+    }
+    if (currentPk !== original.pkColumn) return 'db.designer.sqliteColumnRebuild';
+    if (original.pkColumn && !currentNames.has(original.pkColumn)) return 'db.designer.sqliteColumnRebuild';
+    return null;
+  }
+  if (engine === 'mssql') {
+    for (const col of cols) {
+      const name = col.name.trim();
+      if (!name) continue;
+      const before = originalByName.get(name);
+      if (before && before.defaultValue.trim() !== col.defaultValue.trim()) {
+        return 'db.designer.mssqlDefaultUnsupported';
+      }
+    }
+    return null;
+  }
+  return null;
+};
+
 // The table reference carries the schema when one is known (pg schemas,
 // mysql databases) so the DDL does not depend on the connection search_path.
 const buildTableRef = (dialect: Dialect, table: string, schema?: string): string => {
@@ -374,9 +589,7 @@ const SqlTableDesigner: React.FC<SqlTableDesignerProps> = ({ connectionId, diale
         }));
         setIndexes(indexDrafts);
         const tableRef = buildTableRef(dialect, editingTable, schema);
-        setDdlDraft(dialect === 'mysql'
-          ? buildAlterMysql(editingTable, original, loaded, indexDrafts, tableRef)
-          : buildAlterPg(editingTable, original, loaded, indexDrafts, tableRef));
+        setDdlDraft(getAlterBuilder(dialect)(editingTable, original, loaded, indexDrafts, tableRef));
       } catch (err) {
         if (alive) setLoadError(dbErrorMessage(err));
       } finally {
@@ -391,13 +604,21 @@ const SqlTableDesigner: React.FC<SqlTableDesignerProps> = ({ connectionId, diale
   // in edit mode; [regenerate] and the initial prefill both call this.
   const regenerate = () => {
     const table = tableName.trim() || editingTable || '';
-    const tableRef = buildTableRef(dialect, table, schema);
     const original = originalRef.current;
+    // Unsupported diffs (sqlite column rebuilds, mssql default edits) are
+    // blocked BEFORE the builder runs — the builders throw the same condition
+    // but a toast beats a stack trace, and the DDL stays untouched.
+    if (isEdit && original) {
+      const blocked = designerBlockedReason(dialect, original, columns);
+      if (blocked) {
+        toast.error(t(blocked));
+        return;
+      }
+    }
+    const tableRef = buildTableRef(dialect, table, schema);
     let next = '';
     if (isEdit && original) {
-      next = dialect === 'mysql'
-        ? buildAlterMysql(table, original, columns, indexes, tableRef)
-        : buildAlterPg(table, original, columns, indexes, tableRef);
+      next = getAlterBuilder(dialect)(table, original, columns, indexes, tableRef);
     } else if (!isEdit) {
       next = buildCreateTable(dialect, table, columns, indexes, tableRef);
     }

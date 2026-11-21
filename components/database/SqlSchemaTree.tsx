@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, Table2, View } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
+import { SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
 import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
@@ -17,12 +18,12 @@ import {
 
 interface SqlSchemaTreeProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   onSelectTable: (table: string, kind: 'table' | 'view', schema?: string) => void;
   refreshToken?: number;
   /** Present for SQL dialects: opens the visual table designer in create mode. */
   onCreateTable?: () => void;
-  /** Selected tree "database" (mysql db / pg schema) for row highlight. */
+  /** Selected tree "database" (mysql db / pg+mssql schema) for row highlight. */
   selectedDatabase?: string;
   /** Clicking a database row reports it so workbench-scoped actions follow it. */
   onSelectDatabase?: (name: string) => void;
@@ -95,13 +96,13 @@ const SqlSchemaTree: React.FC<SqlSchemaTreeProps> = ({
                 <ContextMenu key={`t/${db.name}/${table}`}>
                   <ContextMenuTrigger asChild>
                     <button type="button" className="flex items-center gap-1.5 w-full px-4 py-0.5 text-left hover:bg-foreground/5 truncate"
-                      onClick={() => onSelectTable(table, 'table', dialect === 'postgresql' ? db.name : undefined)}>
+                      onClick={() => onSelectTable(table, 'table', SQL_ENGINE_BY_ID[dialect]?.schemaQualified ? db.name : undefined)}>
                       <Table2 size={11} className="text-muted-foreground flex-shrink-0" />
                       <span className="truncate">{table}</span>
                     </button>
                   </ContextMenuTrigger>
                   {tableMenu && (
-                    <SqlTableContextMenuContent table={table} schema={dialect === 'postgresql' ? db.name : undefined} {...tableMenu} />
+                    <SqlTableContextMenuContent table={table} schema={SQL_ENGINE_BY_ID[dialect]?.schemaQualified ? db.name : undefined} {...tableMenu} />
                   )}
                 </ContextMenu>
               ))}
@@ -109,13 +110,13 @@ const SqlSchemaTree: React.FC<SqlSchemaTreeProps> = ({
                 <ContextMenu key={`v/${db.name}/${view}`}>
                   <ContextMenuTrigger asChild>
                     <button type="button" className="flex items-center gap-1.5 w-full px-4 py-0.5 text-left hover:bg-foreground/5 truncate"
-                      onClick={() => onSelectTable(view, 'view', dialect === 'postgresql' ? db.name : undefined)}>
+                      onClick={() => onSelectTable(view, 'view', SQL_ENGINE_BY_ID[dialect]?.schemaQualified ? db.name : undefined)}>
                       <View size={11} className="text-muted-foreground flex-shrink-0" />
                       <span className="truncate">{view}</span>
                     </button>
                   </ContextMenuTrigger>
                   {viewMenu && (
-                    <SqlViewContextMenuContent view={view} schema={dialect === 'postgresql' ? db.name : undefined} {...viewMenu} />
+                    <SqlViewContextMenuContent view={view} schema={SQL_ENGINE_BY_ID[dialect]?.schemaQualified ? db.name : undefined} {...viewMenu} />
                   )}
                 </ContextMenu>
               ))}

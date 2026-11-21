@@ -4,11 +4,12 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { SqlTableMeta } from '../../types/global/quolldesk-bridge-database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 
 interface SqlTableStructureProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   table: string | null;
   schema?: string;
   refreshToken?: number;

@@ -53,3 +53,24 @@ test('the keys view swaps the value viewer for the overview panel when no key is
   assert.match(source, /selectedKey \? \(/);
   assert.match(source, /<RedisOverviewPanel summary=\{redisSummary \?\? \{\}\} db=\{currentDb\} \/>/);
 });
+
+// ——— engine-id threading (Task 9) ——————————————————————————————————————
+
+test('sqlDialect is the engine id (non-redis) with the registry available', () => {
+  assert.match(source, /import \{ SQL_ENGINE_BY_ID, type SqlEngineId \} from '\.\.\/\.\.\/domain\/models\/dbEngines'/);
+  assert.match(source, /const sqlDialect: SqlEngineId = dialect === 'redis' \? 'postgresql' : dialect;/);
+  assert.ok(!source.includes("dialect === 'mysql' ? 'mysql' : 'postgresql'"), 'the two-dialect coercion must be gone');
+});
+
+test('menu entries are gated by engine capability, not hardcoded dialect checks', () => {
+  // sqlite: no DROP DATABASE menu (dropDatabase returns null) and no truncate.
+  assert.match(source, /const canDropDatabase = dropDatabase\(sqlDialect, ''\) !== null;/);
+  assert.match(source, /const canTruncateTables = truncateTable\(sqlDialect, undefined, ''\) !== null;/);
+  assert.match(source, /\.\.\.\(canDropDatabase \? \{/);
+  assert.match(source, /\.\.\.\(canTruncateTables \? \{/);
+  // Backup/designer entries follow the registry feature flags.
+  assert.match(source, /\.\.\.\(engineFeatures\.backupRestore \? \{/);
+  assert.match(source, /\.\.\.\(engineFeatures\.designer \? \{/);
+  // mssql schema-qualified tree: DROP goes through the schema confirm message.
+  assert.match(source, /SQL_ENGINE_BY_ID\[sqlDialect\]\.schemaQualified \? 'db\.tree\.menu\.dropSchemaConfirmMsg' : 'db\.tree\.menu\.dropDbConfirmMsg'/);
+});

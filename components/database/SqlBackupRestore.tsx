@@ -5,11 +5,12 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { DbJobProgress } from '../../types/global/quolldesk-bridge-database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 
 interface SqlBackupRestoreProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   /** Currently selected table in the workbench; 当前表 scope is disabled without it. */
   table?: string;
   /** pg schema of `table` (defaults to public on the bridge). */
@@ -100,7 +101,12 @@ const SqlBackupRestore: React.FC<SqlBackupRestoreProps> = ({ connectionId, diale
     setBackupOutFile(null);
     setBackupProgress(null);
     try {
-      const defaultName = `${dbName || 'db'}_${scope}_${dateStamp(new Date())}.sql`;
+      // sqlite "databases" are files: the connection's dbName carries the db
+      // file path, so the dump file name uses the bare file name.
+      const fileBase = dialect === 'sqlite'
+        ? (dbName ?? '').replace(/\\/g, '/').split('/').pop() ?? ''
+        : (dbName ?? '');
+      const defaultName = `${fileBase || 'db'}_${scope}_${dateStamp(new Date())}.sql`;
       const picked = await client.pickBackupPath(defaultName);
       if (!picked.path) return; // dialog cancelled
       setBackupOutFile(picked.path);

@@ -58,6 +58,55 @@ function _setDriverForTests(next) { driver = next ?? require("mssql"); }
 const q = (ident) => "[" + String(ident).replace(/]/g, "]]") + "]";
 
 /**
+ * mssql INSERT literal adapter for buildInsertStatements: tedious returns BIT
+ * as true/false and varbinary as Buffer — bare sqlLiteral would render
+ * TRUE/FALSE and '\x…'::bytea (pg-only syntax), neither valid T-SQL.
+ * Booleans become 1/0 and Buffers bare 0x<hex> binary literals; everything
+ * else falls through to sqlLiteral (no backslash escaping — mssql reads `\`
+ * literally, same default the dumps already relied on).
+ */
+function mssqlLiteral(value) {
+  if (value === true) return "1";
+  if (value === false) return "0";
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return `0x${value.toString("hex").toUpperCase()}`;
+  }
+  return sqlLiteral(value);
+}
+
+/**
+ * Bracket-qualified object reference interpolated into a T-SQL N'…' string
+ * literal (OBJECT_ID guards): q() doubles `]` for the bracket form, but a `'`
+ * inside the object name would terminate the literal — double it per T-SQL
+ * string rules (q's bracket doubling alone is not enough).
+ */
+function nLiteral(qualifiedRef) {
+  return String(qualifiedRef).replace(/'/g, "''");
+}
+
+/**
+ * Keyset predicate for N PK columns. T-SQL has no row-value comparison
+ * (`WHERE ([a],[b]) > (x,y)` is invalid), so build the left-to-right OR-chain
+ * `([a] > x1 OR ([a] = x1 AND [b] > x2))`. pkCols order is the single source
+ * shared with the data-page ORDER BY (both come from the PK query rows).
+ */
+function keysetPredicate(pkCols, lastPkValues) {
+  const parts = [];
+  for (let i = 0; i < pkCols.length; i += 1) {
+    const equals = [];
+    for (let j = 0; j < i; j += 1) equals.push(`${q(pkCols[j])} = ${mssqlLiteral(lastPkValues[j])}`);
+    // Wrap every AND-group so the OR-chain stays unambiguous regardless of
+    // operator precedence: ([a] > x OR ([a] = x AND [b] > y)).
+    parts.push(
+      equals.length
+        ? `(${equals.join(" AND ")} AND ${q(pkCols[i])} > ${mssqlLiteral(lastPkValues[i])})`
+        : `${q(pkCols[i])} > ${mssqlLiteral(lastPkValues[i])}`,
+    );
+  }
+  return ` WHERE (${parts.join(" OR ")})`;
+}
+
+/**
  * connectPool config mapping (mssql ConnectionPool):
  * - encrypt defaults ON (cloud SQL Server requires TLS) unless tls === false;
  * - tlsInsecure skips the server certificate check (trustServerCertificate).
@@ -196,7 +245,8 @@ async function runLimitedQuery(pool, sql, maxRows = 200) {
  * job aborts) as soon as the renderer that started the job is gone.
  * DDL comes from sys.sql_modules.definition (CREATE TABLE/VIEW [s].[t] ...);
  * the dump drop-guards each object via OBJECT_ID. Data pages page by PK keyset
- * (`WHERE ([pk]) > (last literals)`, OFFSET 0) with ORDER BY (SELECT NULL) +
+ * (per-column OR-chain predicate, keysetPredicate — OFFSET 0) with
+ * ORDER BY (SELECT NULL) +
  * OFFSET/FETCH as the no-PK fallback. Views are emitted AFTER all tables so
  * their base tables exist at CREATE VIEW time. Foreign keys are NOT emitted
  * (documented limitation, same as the pg dump).
@@ -237,7 +287,7 @@ async function runMssqlBackup({ event, pool, connectionId, jobId, scope, schema,
       const label = `${entry.schema}.${entry.name}`;
       const tbl = `${q(entry.schema)}.${q(entry.name)}`;
       await push({ phase: "tables", table: label, tablesDone, tablesTotal: dumpTables.length });
-      await writer.write(`IF OBJECT_ID(N'${tbl}', 'U') IS NOT NULL DROP TABLE ${tbl};\n`);
+      await writer.write(`IF OBJECT_ID(N'${nLiteral(tbl)}', 'U') IS NOT NULL DROP TABLE ${tbl};\n`);
 
       // CREATE TABLE from sys.sql_modules — mssql has no SHOW CREATE TABLE.
       const def = (await runMeta(pool, DDL_SQL, { qualified: label }))[0]?.definition;
@@ -246,20 +296,19 @@ async function runMssqlBackup({ event, pool, connectionId, jobId, scope, schema,
 
       if (includeData) {
         // PK inference mirrors tableMeta (information_schema constraints).
+        // pkCols order is the single source for both the page ORDER BY and
+        // the keyset predicate below.
         const pkRows = await runMeta(pool, PK_SQL_SCHEMA, { s: entry.schema, t: entry.name });
         const pkCols = pkRows.map((r) => r.column_name).filter(Boolean);
         const order = pkCols.length ? ` ORDER BY ${pkCols.map(q).join(", ")}` : " ORDER BY (SELECT NULL)";
-        // Keyset cursor: the last page's PK values rendered as inline literals
-        // (sqlLiteral — mssql reads backslashes literally, no escaping), the
-        // same shape as the mysql/pg dumps. Without a PK rows stream via
-        // OFFSET 0 / FETCH NEXT (one pass, still stable enough for a dump).
+        // Keyset cursor: the last page's PK values compared per column
+        // (mssqlLiteral renders BIT/varbinary PKs restorable too). Without a
+        // PK rows stream via OFFSET 0 / FETCH NEXT (one pass).
         let lastPkValues = null;
         let rowsDone = 0;
         for (;;) {
           if (!senderAlive()) throw new Error("renderer gone — backup aborted");
-          const keyset = pkCols.length && lastPkValues
-            ? ` WHERE (${pkCols.map(q).join(", ")}) > (${lastPkValues.map((v) => sqlLiteral(v)).join(", ")})`
-            : "";
+          const keyset = pkCols.length && lastPkValues ? keysetPredicate(pkCols, lastPkValues) : "";
           const page = await pool.request().query(
             `SELECT * FROM ${tbl}${keyset}${order} OFFSET 0 ROWS FETCH NEXT ${DUMP_PAGE_SIZE} ROWS ONLY`,
           );
@@ -271,7 +320,7 @@ async function runMssqlBackup({ event, pool, connectionId, jobId, scope, schema,
             const valueRows = rows.map((row) => columns.map((name) => (row == null ? null : row[name])));
             const statements = buildInsertStatements({
               tableRef: tbl, quote: q, columns, rows: valueRows,
-              literal: (v) => sqlLiteral(v),
+              literal: mssqlLiteral,
               batchSize: DUMP_INSERT_BATCH,
             });
             for (const statement of statements) await writer.write(statement + "\n");
@@ -297,7 +346,7 @@ async function runMssqlBackup({ event, pool, connectionId, jobId, scope, schema,
       for (const view of dumpViews) {
         if (!senderAlive()) throw new Error("renderer gone — backup aborted");
         const vtbl = `${q(view.schema)}.${q(view.name)}`;
-        await writer.write(`IF OBJECT_ID(N'${vtbl}', 'V') IS NOT NULL DROP VIEW ${vtbl};\n`);
+        await writer.write(`IF OBJECT_ID(N'${nLiteral(vtbl)}', 'V') IS NOT NULL DROP VIEW ${vtbl};\n`);
         const def = (await runMeta(pool, DDL_SQL, { qualified: `${view.schema}.${view.name}` }))[0]?.definition;
         if (!def) throw new Error(`no DDL found for view ${view.schema}.${view.name}`);
         await writer.write(`${def};\n\n`);

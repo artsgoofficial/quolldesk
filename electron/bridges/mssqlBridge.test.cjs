@@ -92,6 +92,110 @@ function makeResponder(data = {}) {
   };
 }
 
+/**
+ * Mini T-SQL executor for exactly the statement shapes OUR dump emits — used
+ * to prove dumps are restorable: the bridge's restore channel executes each
+ * statement through a fake connection into this executor, then the restored
+ * table is read back and compared to the backup source values. Parses:
+ * `IF OBJECT_ID(N'..', 'U'|'V') IS NOT NULL DROP TABLE|VIEW ..` (with ''
+ * un-escaping), `CREATE TABLE [s].[t] (...)` (column types), and multi-row
+ * `INSERT INTO [s].[t] (..) VALUES (..), (..)` with NULL / number / 'string'
+ * / 0xHEX literals (any other literal is rejected — proving the dump never
+ * emits dialect-foreign forms like TRUE or '\x..'::bytea).
+ */
+function makeMiniExecutor() {
+  const tables = new Map(); // "[s].[t]" → { columns: [{ name, type }], rows: [raw objects] }
+  const unescape = (s) => s.replace(/''/g, "'");
+  const splitTop = (text) => {
+    const parts = [];
+    let depth = 0, current = "", inSingle = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inSingle) {
+        current += ch;
+        if (ch === "'") { if (text[i + 1] === "'") { current += "'"; i += 1; } else inSingle = false; }
+        continue;
+      }
+      if (ch === "'") { inSingle = true; current += ch; continue; }
+      if (ch === "(" || ch === "[") depth += 1;
+      else if (ch === ")" || ch === "]") depth -= 1;
+      if (ch === "," && depth === 0) { parts.push(current); current = ""; continue; }
+      current += ch;
+    }
+    parts.push(current);
+    return parts.map((p) => p.trim()).filter(Boolean);
+  };
+  const parseValue = (token) => {
+    const t = token.trim();
+    if (/^NULL$/i.test(t)) return null;
+    if (/^0X[0-9A-F]*$/i.test(t)) return Buffer.from(t.slice(2), "hex");
+    if (/^-?\d+(?:\.\d+)?$/.test(t)) return Number(t);
+    if (/^'[\s\S]*'$/.test(t)) return t.slice(1, -1).replace(/''/g, "'");
+    throw new Error(`unparseable dump literal: ${token}`);
+  };
+  const stripComments = (text) => String(text).replace(/^(?:\s|--[^\n]*\n)+/, "");
+  const exec = (statement) => {
+    const text = stripComments(statement);
+    const drop = text.match(/^IF OBJECT_ID\(N'((?:[^']|'')*)', '(?:U|V)'\) IS NOT NULL DROP (?:TABLE|VIEW) (.+)$/);
+    if (drop) { tables.delete(unescape(drop[1])); return; }
+    const create = text.match(/^CREATE TABLE ((?:\[[^\]]+\]\.)?\[[^\]]+\])\s*\(([\s\S]+)\)$/);
+    if (create) {
+      const columns = splitTop(create[2]).map((def) => {
+        const m = def.match(/^\[([^\]]+)\]\s+([A-Za-z]+)/);
+        return { name: m[1], type: m[2].toUpperCase() };
+      });
+      tables.set(create[1], { columns, rows: [] });
+      return;
+    }
+    const insert = text.match(/^INSERT INTO ((?:\[[^\]]+\]\.)?\[[^\]]+\])\s*\(([^)]+)\)\s*VALUES([\s\S]+)$/i);
+    if (insert) {
+      const entry = tables.get(insert[1]);
+      if (!entry) throw new Error(`INSERT into unknown table ${insert[1]}`);
+      const names = insert[2].split(",").map((c) => c.trim().slice(1, -1));
+      for (const tuple of splitTop(insert[3])) {
+        const values = splitTop(tuple.replace(/^\(/, "").replace(/\)$/, ""));
+        const row = {};
+        names.forEach((name, i) => { row[name] = parseValue(values[i]); });
+        entry.rows.push(row);
+      }
+      return;
+    }
+    // CREATE VIEW and anything else: no table state needed for these proofs.
+  };
+  // Decode stored raw values the way tedious would hand them back (BIT →
+  // boolean, everything else as parsed — varbinary already came back Buffer).
+  const decode = (qualified) => (tables.get(qualified) || { rows: [], columns: [] }).rows.map((row) => {
+    const entry = tables.get(qualified);
+    const out = {};
+    for (const col of entry.columns) {
+      const v = row[col.name];
+      out[col.name] = v == null ? null : (col.type === "BIT" ? (v === 1 ? true : v === 0 ? false : v) : v);
+    }
+    return out;
+  });
+  return { exec, decode, tables };
+}
+
+/**
+ * pool.respond for the "restored" fake connection: dump DDL/INSERT statements
+ * feed the mini executor, SELECT * reads the restored table back.
+ */
+function makeRestoreResponder(executor, decodeTableRef) {
+  return (sql) => {
+    const text = String(sql).replace(/^(?:\s|--[^\n]*\n)+/, "");
+    const lower = text.toLowerCase();
+    if (lower.startsWith("if object_id") || lower.startsWith("create table") || lower.startsWith("insert into")) {
+      executor.exec(text);
+      return { recordsets: [], rowsAffected: [1] };
+    }
+    if (lower.includes("select * from")) {
+      const rows = executor.decode(decodeTableRef);
+      return { recordsets: [rows], rowsAffected: [rows.length] };
+    }
+    return { recordsets: [], rowsAffected: [0] };
+  };
+}
+
 const MSSQL_CHANNELS = [
   "quolldesk:mssql:connect",
   "quolldesk:mssql:disconnect",
@@ -457,7 +561,7 @@ test("backup (table scope): OBJECT_ID drop guard, sql_modules DDL, PK keyset pag
     );
     assert.equal(
       pageSqls[1],
-      "SELECT * FROM [dbo].[users] WHERE ([id]) > (500) ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
+      "SELECT * FROM [dbo].[users] WHERE ([id] > 500) ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY",
       pageSqls[1],
     );
     assert.ok(!pool.queryLog.some((q) => q.sql.includes("v_orders") && q.sql.includes("SELECT definition")), "table scope skips views");
@@ -502,6 +606,173 @@ test("backup (database scope, DDL only): tables then views from sys.sql_modules"
     const viewDefIdx = dump.indexOf("CREATE VIEW [dbo].[v_orders]");
     assert.ok(usersIdx >= 0 && logIdx >= 0 && viewIdx > logIdx && viewDefIdx > viewIdx, dump);
     assert.ok(dump.includes("IF OBJECT_ID(N'[dbo].[v_orders]', 'V') IS NOT NULL DROP VIEW [dbo].[v_orders];"), dump);
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(outFile, () => {});
+  }
+});
+
+test("backup: BIT/varbinary columns render T-SQL literals (1/0, 0x..) and restore round-trips", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call, { database: "appdb" });
+  const pool = fake.state.pools[0];
+  const data1 = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+  const data2 = Buffer.from([0x00, 0xff]);
+  pool.respond = makeResponder({
+    listing: [{ schema_name: "dbo", table_name: "bits", kind: "U" }],
+    pk: [{ constraint_name: "PK_bits", column_name: "id" }],
+    ddl: { "dbo.bits": "CREATE TABLE [dbo].[bits] (\n  [id] INT NOT NULL,\n  [flag] BIT NOT NULL,\n  [data] VARBINARY(MAX)\n)" },
+    page: () => [
+      { id: 1, flag: true, data: data1 },
+      { id: 2, flag: false, data: data2 },
+    ],
+  });
+  const outFile = tmpSqlFile("backup-bits");
+  try {
+    const res = await call("quolldesk:mssql:backup", { connectionId, scope: "table", schema: "dbo", table: "bits", includeData: true, outFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    await waitForPush(pushes, "done");
+    const dump = fs.readFileSync(outFile, "utf8");
+    // BIT → 1/0 (never TRUE/FALSE); varbinary → bare 0x hex (never pg's '\x..'::bytea).
+    assert.ok(dump.includes("(1, 1, 0xDEADBEEF)"), dump);
+    assert.ok(dump.includes("(2, 0, 0x00FF)"), dump);
+    assert.ok(!/\bTRUE\b|\bFALSE\b/.test(dump), dump);
+    assert.ok(!dump.includes("::bytea"), dump);
+
+    // Roundtrip proof: restore the dump into a fresh connection through the
+    // bridge's restore channel, then read the values back via tableRows.
+    pushes.length = 0; // drop the backup job's pushes so waitForPush sees the restore's
+    const executor = makeMiniExecutor();
+    const conn2 = await call("quolldesk:mssql:connect", { ...CONNECT_OPTS, config: { database: "restored" } });
+    fake.state.pools[1].respond = makeRestoreResponder(executor, "[dbo].[bits]");
+    const restore = await call("quolldesk:mssql:restore", { connectionId: conn2.data.connectionId, inFile: outFile });
+    assert.equal(restore.ok, true, JSON.stringify(restore));
+    await waitForPush(pushes, "done");
+    const rows = await call("quolldesk:mssql:tableRows", { connectionId: conn2.data.connectionId, table: "bits", schema: "dbo" });
+    assert.equal(rows.ok, true, JSON.stringify(rows));
+    // serializeCellValue: BIT decodes to true/false → "true"/"false"; varbinary
+    // decodes to Buffer → JSON text. Equal to the original source values.
+    assert.deepEqual(rows.data.rows, [
+      ["1", "true", JSON.stringify({ type: "Buffer", data: [222, 173, 190, 239] })],
+      ["2", "false", JSON.stringify({ type: "Buffer", data: [0, 255] })],
+    ]);
+    await call("quolldesk:mssql:disconnect", { connectionId: conn2.data.connectionId });
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(outFile, () => {});
+  }
+});
+
+test("backup: composite PK keyset uses per-column OR-chains and every row lands", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call, { database: "appdb" });
+  const pool = fake.state.pools[0];
+  // 520 rows (a = 1..26, b = 1..20): page 1 fills DUMP_PAGE_SIZE=500, the rest
+  // must come back via a second (keyset) page.
+  const fullRows = [];
+  for (let k = 0; k < 520; k += 1) fullRows.push({ a: Math.floor(k / 20) + 1, b: (k % 20) + 1, tag: `r${k}` });
+  // Evaluate the generated 2-column keyset predicate with real T-SQL
+  // semantics — a wrong predicate here would fail (or loop) the backup.
+  const evalKeyset = (sql) => {
+    const m = sql.match(/WHERE \(\[([a-z_]+)\] > (-?\d+) OR \(\[([a-z_]+)\] = (-?\d+) AND \[([a-z_]+)\] > (-?\d+)\)\)/i);
+    if (!m) throw new Error(`unexpected keyset predicate: ${sql}`);
+    const [, c1, v1, e1, ev1, c2, v2] = m;
+    if (!(c1 === "a" && e1 === "a" && c2 === "b")) throw new Error(`predicate columns out of order: ${sql}`);
+    const x1 = Number(v1), x2 = Number(ev1);
+    return fullRows.filter((r) => r[c1] > x1 || (r[e1] === x1 && r[c2] > x2));
+  };
+  pool.respond = makeResponder({
+    listing: [{ schema_name: "dbo", table_name: "c_pk", kind: "U" }],
+    pk: [
+      { constraint_name: "PK_cpk", column_name: "a" },
+      { constraint_name: "PK_cpk", column_name: "b" },
+    ],
+    ddl: { "dbo.c_pk": "CREATE TABLE [dbo].[c_pk] (\n  [a] INT NOT NULL,\n  [b] INT NOT NULL,\n  [tag] NVARCHAR(40)\n)" },
+    page: (sql) => (sql.includes(" WHERE ") ? evalKeyset(sql).slice(0, 500) : fullRows.slice(0, 500)),
+  });
+  const outFile = tmpSqlFile("backup-cpk");
+  try {
+    const res = await call("quolldesk:mssql:backup", { connectionId, scope: "table", schema: "dbo", table: "c_pk", includeData: true, outFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    await waitForPush(pushes, "done");
+
+    // Exactly two data pages; the second resumes via the OR-chain predicate
+    // (no row-value comparison — T-SQL has none).
+    const pageSqls = pool.queryLog.filter((q) => q.sql.includes("SELECT * FROM")).map((q) => q.sql);
+    assert.equal(pageSqls.length, 2, JSON.stringify(pageSqls));
+    assert.match(pageSqls[0], /ORDER BY \[a\], \[b\] OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY$/, pageSqls[0]);
+    assert.match(pageSqls[1], /WHERE \(\[a\] > 25 OR \(\[a\] = 25 AND \[b\] > 20\)\) ORDER BY \[a\], \[b\]/, pageSqls[1]);
+    assert.ok(!pageSqls[1].includes(") > ("), "row-value comparison must not be generated");
+
+    const dump = fs.readFileSync(outFile, "utf8");
+    assert.ok(dump.includes("(25, 20, 'r499')"), dump);
+    assert.ok(dump.includes("(26, 20, 'r519')"), dump);
+    const insertedRows = (dump.match(/\(\d+, \d+, 'r\d+'/g) || []).length;
+    assert.equal(insertedRows, 520, `expected 520 dumped rows, got ${insertedRows}`);
+
+    // Roundtrip proof: restore into a fresh connection, read all rows back.
+    pushes.length = 0; // drop the backup job's pushes so waitForPush sees the restore's
+    const executor = makeMiniExecutor();
+    const conn2 = await call("quolldesk:mssql:connect", { ...CONNECT_OPTS, config: { database: "restored" } });
+    fake.state.pools[1].respond = makeRestoreResponder(executor, "[dbo].[c_pk]");
+    const restore = await call("quolldesk:mssql:restore", { connectionId: conn2.data.connectionId, inFile: outFile });
+    assert.equal(restore.ok, true, JSON.stringify(restore));
+    await waitForPush(pushes, "done");
+    const rows = await call("quolldesk:mssql:tableRows", { connectionId: conn2.data.connectionId, table: "c_pk", schema: "dbo", limit: 1000 });
+    assert.equal(rows.ok, true, JSON.stringify(rows));
+    assert.equal(rows.data.rows.length, 520, "all 520 rows must land in the restored table");
+    assert.deepEqual(rows.data.rows[0], ["1", "1", "r0"]);
+    assert.deepEqual(rows.data.rows[499], ["25", "20", "r499"]);
+    assert.deepEqual(rows.data.rows[519], ["26", "20", "r519"]);
+    await call("quolldesk:mssql:disconnect", { connectionId: conn2.data.connectionId });
+  } finally {
+    await call("quolldesk:mssql:disconnect", { connectionId });
+    bridge._setDriverForTests(undefined);
+    fs.unlink(outFile, () => {});
+  }
+});
+
+test("backup/restore: object names containing quotes survive the OBJECT_ID guard literals", async () => {
+  const { fake, bridge, pushes, call } = setup();
+  const connectionId = await connect(call, { database: "appdb" });
+  const pool = fake.state.pools[0];
+  pool.respond = makeResponder({
+    listing: [
+      { schema_name: "dbo", table_name: "weird'name", kind: "U" },
+      { schema_name: "dbo", table_name: "v'w", kind: "V" },
+    ],
+    ddl: {
+      "dbo.weird'name": "CREATE TABLE [dbo].[weird'name] (\n  [id] INT NOT NULL\n)",
+      "dbo.v'w": "CREATE VIEW [dbo].[v'w] AS SELECT 1 AS one",
+    },
+  });
+  const outFile = tmpSqlFile("backup-quote");
+  try {
+    const res = await call("quolldesk:mssql:backup", { connectionId, scope: "database", includeData: false, outFile });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    await waitForPush(pushes, "done");
+    const dump = fs.readFileSync(outFile, "utf8");
+    // The N'' guard literal escapes the quote (the bracket name outside stays raw).
+    assert.ok(dump.includes("IF OBJECT_ID(N'[dbo].[weird''name]', 'U') IS NOT NULL DROP TABLE [dbo].[weird'name];"), dump);
+    assert.ok(dump.includes("IF OBJECT_ID(N'[dbo].[v''w]', 'V') IS NOT NULL DROP VIEW [dbo].[v'w];"), dump);
+    assert.ok(!dump.includes("N'[dbo].[weird'name]'"), "unescaped quote would terminate the OBJECT_ID literal");
+
+    // Roundtrip: restore executes the guarded drop (un-escaping the N literal
+    // back to the real key) and the CREATE TABLE.
+    pushes.length = 0; // drop the backup job's pushes so waitForPush sees the restore's
+    const executor = makeMiniExecutor();
+    executor.tables.set("[dbo].[weird'name]", { columns: [{ name: "stale", type: "INT" }], rows: [] });
+    const conn2 = await call("quolldesk:mssql:connect", { ...CONNECT_OPTS, config: { database: "restored" } });
+    fake.state.pools[1].respond = makeRestoreResponder(executor, "[dbo].[weird'name]");
+    const restore = await call("quolldesk:mssql:restore", { connectionId: conn2.data.connectionId, inFile: outFile });
+    assert.equal(restore.ok, true, JSON.stringify(restore));
+    await waitForPush(pushes, "done");
+    const entry = executor.tables.get("[dbo].[weird'name]");
+    assert.ok(entry, "quoted-name table must exist after restore");
+    assert.deepEqual(entry.columns, [{ name: "id", type: "INT" }]);
+    await call("quolldesk:mssql:disconnect", { connectionId: conn2.data.connectionId });
   } finally {
     await call("quolldesk:mssql:disconnect", { connectionId });
     bridge._setDriverForTests(undefined);

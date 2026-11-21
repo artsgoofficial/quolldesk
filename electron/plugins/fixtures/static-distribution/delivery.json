@@ -1,0 +1,48 @@
+{
+  "builderSha256": "57199cc6a5d30f5f356adb072d51de9e2283dac6e26c647a4404e4c2261c4a70",
+  "catalogSha256": "89912099344dba9caa013260ec06a906311e5ad2640ec3c9e989b113d25eb11d",
+  "indexSha256": "c245d0a9196f31b49f225231d38b2fc38620f8faddfe4e4d646abe144f5ad578",
+  "plugins": [
+    {
+      "artifact": null,
+      "avatar": null,
+      "commit": "f4a6b205adca486d4e9cda0270e13a9ff0afd7be",
+      "iconDark": {
+        "path": "/assets/7a897a67ae6b652339c77a113d1c759919776fead82d2eefd0238d3c05ba87fe.png",
+        "sha256": "7a897a67ae6b652339c77a113d1c759919776fead82d2eefd0238d3c05ba87fe",
+        "size": 873
+      },
+      "iconLight": {
+        "path": "/assets/ec7bcd5e470ee3d3d9f7f77d120a4de7496a9c0ba984094f84e560d240bea947.png",
+        "sha256": "ec7bcd5e470ee3d3d9f7f77d120a4de7496a9c0ba984094f84e560d240bea947",
+        "size": 873
+      },
+      "id": "com.quolldesk.starter",
+      "readme": {
+        "path": "/assets/2e18d383ef0b5729b9163e59abde70c029cd58411e2e6f33f3b2312ef15993be.md",
+        "sha256": "2e18d383ef0b5729b9163e59abde70c029cd58411e2e6f33f3b2312ef15993be",
+        "size": 2054
+      },
+      "repository": "artsgoofficial/quolldesk",
+      "version": "0.1.2"
+    },
+    {
+      "artifact": null,
+      "avatar": null,
+      "commit": "4336f8fd53a05a48d6bbc9ad3ce0ca88b121862f",
+      "iconDark": null,
+      "iconLight": null,
+      "id": "com.quolldesk.hello",
+      "readme": {
+        "path": "/assets/80ace400ac342772a460776fe027d49fca6f8e9edb1cdc4c048c52219d09f1c6.md",
+        "sha256": "80ace400ac342772a460776fe027d49fca6f8e9edb1cdc4c048c52219d09f1c6",
+        "size": 2959
+      },
+      "repository": "artsgoofficial/quolldesk",
+      "version": "0.1.0"
+    }
+  ],
+  "registryCommit": "32578ae27ff86f0151511478d698a1cdc12fb2e0",
+  "schemaVersion": 1,
+  "sourceLockSha256": "753711c1860ff0fcc10a558182f8c868d9d06b40e5c8de5522249d0d27b139d6"
+}

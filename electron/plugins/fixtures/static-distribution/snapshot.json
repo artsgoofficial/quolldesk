@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "registryCommit": "32578ae27ff86f0151511478d698a1cdc12fb2e0",
+  "snapshotId": "c78075cf7f4cbaa19e93ed235d2241cb131aaf22e94ea52c11b370230c452907",
+  "catalog": {
+    "path": "/snapshots/c78075cf7f4cbaa19e93ed235d2241cb131aaf22e94ea52c11b370230c452907/catalog.json",
+    "sha256": "89912099344dba9caa013260ec06a906311e5ad2640ec3c9e989b113d25eb11d",
+    "size": 5750
+  },
+  "index": {
+    "path": "/snapshots/c78075cf7f4cbaa19e93ed235d2241cb131aaf22e94ea52c11b370230c452907/index.json",
+    "sha256": "c245d0a9196f31b49f225231d38b2fc38620f8faddfe4e4d646abe144f5ad578",
+    "size": 7731
+  },
+  "delivery": {
+    "path": "/snapshots/c78075cf7f4cbaa19e93ed235d2241cb131aaf22e94ea52c11b370230c452907/delivery.json",
+    "sha256": "c78075cf7f4cbaa19e93ed235d2241cb131aaf22e94ea52c11b370230c452907",
+    "size": 1883
+  }
+}

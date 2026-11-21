@@ -1,0 +1,86 @@
+{
+  "$schema": "../../../packages/plugin-contract/schema/plugin-contract.schema.json",
+  "manifestVersion": 1,
+  "id": "com.quolldesk.hello",
+  "name": "hello-quolldesk",
+  "displayName": {
+    "en": "Hello QuollDesk",
+    "zh-CN": "你好，QuollDesk"
+  },
+  "description": "Minimal plugin contract and SDK example.",
+  "version": "0.1.0",
+  "publisher": "quolldesk",
+  "license": "GPL-3.0-or-later",
+  "engines": {
+    "quolldesk": ">=0.0.0",
+    "api": ">=0.1.0-internal <0.2.0"
+  },
+  "main": {
+    "browser": "dist/index.js"
+  },
+  "activationEvents": [
+    "onCommand:com.quolldesk.hello.sayHello",
+    "onProvider:com.quolldesk.hello.completion",
+    "onProvider:com.quolldesk.hello.decoration",
+    "onProvider:com.quolldesk.hello.theme"
+  ],
+  "permissions": {
+    "required": [
+      "commands",
+      "settings.read",
+      "menus",
+      "provider.terminal",
+      "terminal.complete",
+      "terminal.output",
+      "terminal.decorate"
+    ],
+    "optional": []
+  },
+  "contributes": {
+    "settings": [
+      {
+        "id": "com.quolldesk.hello.greeting",
+        "label": "Greeting",
+        "description": "Text used by the example command.",
+        "control": "text",
+        "scope": "application",
+        "default": "Hello from QuollDesk"
+      }
+    ],
+    "commands": [
+      {
+        "id": "com.quolldesk.hello.sayHello",
+        "title": "Say Hello",
+        "category": "Examples"
+      }
+    ],
+    "menus": [
+      {
+        "command": "com.quolldesk.hello.sayHello",
+        "location": "commandPalette",
+        "group": "examples",
+        "order": 10
+      }
+    ],
+    "providers": [
+      {
+        "id": "com.quolldesk.hello.completion",
+        "label": "Hello completion",
+        "description": "Suggests the example hello command.",
+        "kind": "terminal.completion"
+      },
+      {
+        "id": "com.quolldesk.hello.decoration",
+        "label": "Hello decoration",
+        "description": "Highlights the example greeting in terminal output.",
+        "kind": "terminal.decoration"
+      },
+      {
+        "id": "com.quolldesk.hello.theme",
+        "label": "Hello theme",
+        "description": "Adds a subtle cursor color to the example terminal theme.",
+        "kind": "terminal.theme"
+      }
+    ]
+  }
+}

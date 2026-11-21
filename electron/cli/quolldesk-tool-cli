@@ -1,0 +1,29 @@
+#!/bin/sh
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CLI_SCRIPT="$SCRIPT_DIR/quolldesk-tool-cli.cjs"
+
+APP_BIN=""
+if [ -n "${QUOLLDESK_CLI_ELECTRON_EXEC_PATH:-}" ] && [ -x "${QUOLLDESK_CLI_ELECTRON_EXEC_PATH}" ]; then
+  APP_BIN="${QUOLLDESK_CLI_ELECTRON_EXEC_PATH}"
+elif [ -x "$SCRIPT_DIR/../../../../MacOS/QuollDesk" ]; then
+  APP_BIN="$SCRIPT_DIR/../../../../MacOS/QuollDesk"
+elif [ -x "$SCRIPT_DIR/../../../../QuollDesk" ]; then
+  APP_BIN="$SCRIPT_DIR/../../../../QuollDesk"
+elif [ -x "$SCRIPT_DIR/../../../../quolldesk" ]; then
+  APP_BIN="$SCRIPT_DIR/../../../../quolldesk"
+fi
+
+if [ -n "$APP_BIN" ]; then
+  export ELECTRON_RUN_AS_NODE=1
+  exec "$APP_BIN" "$CLI_SCRIPT" "$@"
+fi
+
+if command -v node >/dev/null 2>&1; then
+  exec node "$CLI_SCRIPT" "$@"
+fi
+
+printf '%s\n' "Failed to locate the bundled QuollDesk runtime for quolldesk-tool-cli." >&2
+exit 1

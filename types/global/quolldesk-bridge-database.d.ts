@@ -17,7 +17,8 @@ export interface DbSshTunnelOptions {
 
 export interface DbConnectOptions {
   hostname: string;
-  port: number;
+  /** Optional: SQLite connects to a file and has no port. */
+  port?: number;
   username?: string;
   password?: string;
   config?: {
@@ -29,6 +30,10 @@ export interface DbConnectOptions {
     tunnelHostId?: string;
     cluster?: boolean;
     clusterNodes?: { hostname: string; port: number }[];
+    /** SQLite only: path of the database file. */
+    filePath?: string;
+    /** SQLite only: open the database read-only. */
+    readOnly?: boolean;
   };
   /** Present when the host resolves to an SSH tunnel (renderer-built). */
   ssh?: DbSshTunnelOptions;
@@ -105,7 +110,7 @@ export interface DbRestoreOptions { connectionId: string; inFile: string }
 /** Push payload on quolldesk:db:jobProgress (single channel, both dialects). */
 export interface DbJobProgress {
   jobId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite';
   phase: 'tables' | 'rows' | 'views' | 'restore' | 'done' | 'error';
   /** Table being dumped / restored (pg: 'schema.table'). */
   table?: string;
@@ -125,7 +130,7 @@ export interface DbJobProgress {
 /** Push payload on quolldesk:db:connectionClosed (main process closed a connection the renderer still holds). */
 export interface DbConnectionClosed {
   connectionId: string;
-  dialect?: 'redis' | 'mysql' | 'postgresql';
+  dialect?: 'redis' | 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite';
   /** 'idle-timeout' (registry reap) or 'driver-error' (server death); never 'user'/'renderer-gone'. */
   reason?: string;
 }
@@ -184,6 +189,47 @@ declare global {
     pickPgRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupPg?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
     restorePg?(args: DbRestoreOptions): Promise<DbEnvelope<{ jobId: string }>>;
+
+    connectMariadb?(options: DbConnectOptions): Promise<DbEnvelope<{ connectionId: string }>>;
+    disconnectMariadb?(connectionId: string): Promise<DbEnvelope<Record<string, never>>>;
+    testMariadbConnection?(options: DbConnectOptions): Promise<DbEnvelope<{ latencyMs: number; serverVersion?: string }>>;
+    getMariadbSchemaTree?(args: { connectionId: string }): Promise<DbEnvelope<SqlSchemaTree>>;
+    getMariadbTableMeta?(args: { connectionId: string; table: string; schema?: string }): Promise<DbEnvelope<SqlTableMeta>>;
+    getMariadbTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
+    queryMariadb?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
+    applyMariadbTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    pickMariadbBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
+    pickMariadbRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
+    backupMariadb?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
+    restoreMariadb?(args: DbRestoreOptions): Promise<DbEnvelope<{ jobId: string }>>;
+
+    connectMssql?(options: DbConnectOptions): Promise<DbEnvelope<{ connectionId: string }>>;
+    disconnectMssql?(connectionId: string): Promise<DbEnvelope<Record<string, never>>>;
+    testMssqlConnection?(options: DbConnectOptions): Promise<DbEnvelope<{ latencyMs: number; serverVersion?: string }>>;
+    getMssqlSchemaTree?(args: { connectionId: string }): Promise<DbEnvelope<SqlSchemaTree>>;
+    getMssqlTableMeta?(args: { connectionId: string; table: string; schema?: string }): Promise<DbEnvelope<SqlTableMeta>>;
+    getMssqlTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
+    queryMssql?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
+    applyMssqlTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    pickMssqlBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
+    pickMssqlRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
+    backupMssql?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
+    restoreMssql?(args: DbRestoreOptions): Promise<DbEnvelope<{ jobId: string }>>;
+
+    connectSqlite?(options: DbConnectOptions): Promise<DbEnvelope<{ connectionId: string }>>;
+    disconnectSqlite?(connectionId: string): Promise<DbEnvelope<Record<string, never>>>;
+    testSqliteConnection?(options: DbConnectOptions): Promise<DbEnvelope<{ latencyMs: number; serverVersion?: string }>>;
+    getSqliteSchemaTree?(args: { connectionId: string }): Promise<DbEnvelope<SqlSchemaTree>>;
+    getSqliteTableMeta?(args: { connectionId: string; table: string; schema?: string }): Promise<DbEnvelope<SqlTableMeta>>;
+    getSqliteTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
+    querySqlite?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
+    applySqliteTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    pickSqliteBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
+    pickSqliteRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
+    backupSqlite?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
+    restoreSqlite?(args: DbRestoreOptions): Promise<DbEnvelope<{ jobId: string }>>;
+    /** SQLite only: file picker for open/save of a database file. */
+    pickSqliteDatabaseFile?(args?: { mode?: 'open' | 'save' }): Promise<DbEnvelope<{ path: string | null }>>;
 
     /** Shared job-progress pushes for SQL backup/restore (both dialects). */
     onDbJobProgress?(cb: (payload: DbJobProgress) => void): () => void;

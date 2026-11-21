@@ -97,6 +97,7 @@ function createBridgeRegistrar(context) {
     redisDbBridge,
     mysqlDbBridge,
     pgDbBridge,
+    mariadbDbBridge,
     terminalBridge,
     crashLogBridge,
     ptyProcessTree,
@@ -503,6 +504,7 @@ function createBridgeRegistrar(context) {
     redisDbBridge.registerHandlers(ipcMain, {});
     mysqlDbBridge.registerHandlers(ipcMain, {});
     pgDbBridge.registerHandlers(ipcMain, {});
+    mariadbDbBridge.registerHandlers(ipcMain, {});
     // One shared close listener (the registry is process-wide): pushes
     // quolldesk:db:connectionClosed to the owning renderer on closes it cannot
     // know about (idle reap, driver death) so the workbench tab flips to
@@ -520,6 +522,7 @@ function createBridgeRegistrar(context) {
       redisDbBridge.closeAllForSender(senderId);
       mysqlDbBridge.closeAllForSender(senderId);
       pgDbBridge.closeAllForSender(senderId);
+      mariadbDbBridge.closeAllForSender(senderId);
     };
     const wc = win?.webContents;
     const dbSenderId = wc?.id;

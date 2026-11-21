@@ -96,6 +96,7 @@ function createBridgeRegistrarForTest({
     redisDbBridge: noopBridge,
     mysqlDbBridge: noopBridge,
     pgDbBridge: noopBridge,
+    mariadbDbBridge: noopBridge,
     terminalBridge: terminalBridge || { ...noopBridge, execOnEtSession() {} },
     crashLogBridge: noopBridge,
     ptyProcessTree: { getChildProcesses: () => [] },

@@ -14,7 +14,6 @@
  * - the connect option is `options.connectTimeout` (no connectTimeoutMilliseconds).
  */
 
-const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 
 const registry = require("./dbCommon/connectionRegistry.cjs");
@@ -239,22 +238,16 @@ async function runLimitedQuery(pool, sql, maxRows = 200) {
 }
 
 /**
- * databaseService (AI/MCP) database.query/execute consume this: run one batch
- * on the pool and return mysql-family shaped segments —
- * `{ columns, rows, okPacket, truncated }[]` — so the service maps mssql
- * exactly like the mysql path. Rows are cellified OBJECT rows
- * (serializeCellValue per cell: tedious Dates/Buffers → JSON-safe); the
- * flattened rowsAffected aggregate attaches to the last column-less result
- * set (or a synthetic trailing set for a pure-DML batch), same semantics as
- * the quolldesk:mssql:query channel.
+ * Map one mssql batch result (`{ recordsets, rowsAffected }`) into
+ * mysql-family shaped segments — `{ columns, rows, okPacket, truncated }[]` —
+ * shared by runQuery (plain pool batch) and runReadOnlyBatch
+ * (Transaction-bound read batch) so the service maps mssql exactly like the
+ * mysql path. Rows are cellified OBJECT rows (serializeCellValue per cell:
+ * tedious Dates/Buffers → JSON-safe); the flattened rowsAffected aggregate
+ * attaches to the last column-less result set (or a synthetic trailing set
+ * for a pure-DML batch), same semantics as the quolldesk:mssql:query channel.
  */
-async function runQuery(pool, sql, timeoutMs) {
-  // v12 exposes no request.timeout property — per-request timeout is a
-  // Request override: pool.request({ requestTimeout }).
-  const req = pool.request({
-    requestTimeout: Math.min(Math.max(1, Number(timeoutMs) || DEFAULT_QUERY_TIMEOUT_MS), MAX_QUERY_TIMEOUT_MS),
-  });
-  const res = await req.query(String(sql));
+function mapBatchResult(res) {
   const recordsets = Array.isArray(res.recordsets) ? res.recordsets : [];
   const affectedTotal = (res.rowsAffected || []).reduce((sum, n) => sum + (Number(n) || 0), 0);
   const segments = recordsets.map((recordset) => {
@@ -277,6 +270,50 @@ async function runQuery(pool, sql, timeoutMs) {
     segments.push({ columns: [], rows: [], okPacket: { affectedRows: affectedTotal }, truncated: false });
   }
   return segments;
+}
+
+/**
+ * databaseService (AI/MCP) database.query/execute consume this: run one batch
+ * on the pool and return mysql-family shaped segments —
+ * `{ columns, rows, okPacket, truncated }[]` — so the service maps mssql
+ * exactly like the mysql path.
+ */
+async function runQuery(pool, sql, timeoutMs) {
+  // v12 exposes no request.timeout property — per-request timeout is a
+  // Request override: pool.request({ requestTimeout }).
+  const req = pool.request({
+    requestTimeout: Math.min(Math.max(1, Number(timeoutMs) || DEFAULT_QUERY_TIMEOUT_MS), MAX_QUERY_TIMEOUT_MS),
+  });
+  const res = await req.query(String(sql));
+  return mapBatchResult(res);
+}
+
+/**
+ * databaseService (AI/MCP) database.query READ path for mssql: run one batch
+ * inside a tedious Transaction bound to THIS pool. mssql's ConnectionPool
+ * (min:0/max:10) hands every pool.request() an arbitrary idle connection, so
+ * issuing BEGIN/query/ROLLBACK as three separate pool requests can scatter
+ * them across connections — the batch would run OUTSIDE the transaction
+ * (SELECT ... INTO would persist) and the ROLLBACK would leak a transaction
+ * on another connection. Transaction.begin() acquires and holds ONE
+ * connection, and every Request created against the transaction runs on it
+ * (same pattern as the applyTableChanges handler). Never commits: rollback
+ * runs in finally on success AND failure — the keyword gate is the primary
+ * write block (mssql has no server-side READ ONLY transaction), the rollback
+ * is the backstop.
+ */
+async function runReadOnlyBatch(pool, sql, timeoutMs) {
+  const tx = new (getDriver()).Transaction(pool);
+  await tx.begin();
+  try {
+    const req = new (getDriver()).Request(tx, {
+      requestTimeout: Math.min(Math.max(1, Number(timeoutMs) || DEFAULT_QUERY_TIMEOUT_MS), MAX_QUERY_TIMEOUT_MS),
+    });
+    const res = await req.query(String(sql));
+    return mapBatchResult(res);
+  } finally {
+    try { await tx.rollback(); } catch { /* connection may be broken; registry reaps it */ }
+  }
 }
 
 /**
@@ -708,5 +745,5 @@ function registerHandlers(ipcMain, options = {}) {
 function closeAllForSender(senderId) { return registry.closeAllForSender(senderId); }
 
 module.exports = {
-  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery, runQuery,
+  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery, runQuery, runReadOnlyBatch,
 };

@@ -149,6 +149,62 @@ function truncateSnippet(s) {
 }
 
 /**
+ * mssql's SELECT ... INTO creates a table while leading with SELECT — the
+ * keyword gate alone would pass it. Scan the statement with string literals
+ * ('' / "" doubling), [bracket identifiers], -- and /* *\/ comments blanked
+ * (same quote/comment rules as hasUnquotedEquals) and match
+ * /\bselect\b[\s\S]*\binto\b/i on the residue, so an "into" inside a string,
+ * identifier or comment cannot trigger it. Simple text scan, not a parser:
+ * exotic nestings may still trip it, but over-rejecting a rare read is the
+ * acceptable trade-off against an approval-bypassing write.
+ */
+function hasSelectInto(statement) {
+  const text = String(statement);
+  const blanked = [];
+  let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i], next = text[i + 1];
+    if (inLineComment) { blanked.push(ch === "\n" ? "\n" : " "); if (ch === "\n") inLineComment = false; i += 1; continue; }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") { inBlockComment = false; blanked.push("  "); i += 2; continue; }
+      blanked.push(ch === "\n" ? "\n" : " "); i += 1; continue;
+    }
+    if (inSingle) {
+      if (ch === "'") {
+        if (next === "'") { blanked.push("  "); i += 2; continue; }
+        inSingle = false; blanked.push(" "); i += 1; continue;
+      }
+      blanked.push(ch === "\n" ? "\n" : " "); i += 1; continue;
+    }
+    if (inDouble) {
+      if (ch === '"') {
+        if (next === '"') { blanked.push("  "); i += 2; continue; }
+        inDouble = false; blanked.push(" "); i += 1; continue;
+      }
+      blanked.push(ch === "\n" ? "\n" : " "); i += 1; continue;
+    }
+    if (ch === "-" && next === "-") { inLineComment = true; blanked.push("  "); i += 2; continue; }
+    if (ch === "/" && next === "*") { inBlockComment = true; blanked.push("  "); i += 2; continue; }
+    if (ch === "'") { inSingle = true; blanked.push(" "); i += 1; continue; }
+    if (ch === '"') { inDouble = true; blanked.push(" "); i += 1; continue; }
+    if (ch === "[") { // [bracket identifier] — contents are a name, never the INTO keyword
+      blanked.push(" "); i += 1;
+      while (i < text.length) {
+        if (text[i] === "]") {
+          if (text[i + 1] === "]") { blanked.push("  "); i += 2; continue; }
+          break;
+        }
+        blanked.push(text[i] === "\n" ? "\n" : " "); i += 1;
+      }
+      blanked.push(" "); i += 1; continue;
+    }
+    blanked.push(ch); i += 1;
+  }
+  return /\bselect\b[\s\S]*\binto\b/i.test(blanked.join(""));
+}
+
+/**
  * Validate that every statement in `sql` is read-only for `dialect`.
  * Returns `{ ok: true, statements }` or
  * `{ ok: false, code: "READ_ONLY_VIOLATION" | "INVALID_PARAMS", error }`.
@@ -178,6 +234,18 @@ function validateReadOnlySql(dialect, sql) {
         ok: false,
         code: "READ_ONLY_VIOLATION",
         error: `Statement "${truncateSnippet(stmt)}" is not read-only (PRAGMA assignment form; only bare or function-call PRAGMA reads are allowed). ` +
+          "Only read-only statements (SELECT/WITH and the engine's allowed keywords) are permitted; use database_execute for writes.",
+      };
+    }
+    // mssql: SELECT ... INTO creates a table while leading with SELECT —
+    // mssql has no server-side READ ONLY transaction, so the gate must reject
+    // it itself (hasSelectInto: quoted/comment/identifier text cannot
+    // false-positive; see there for the residual over-rejection trade-off).
+    if (dialect === "mssql" && hasSelectInto(stmt)) {
+      return {
+        ok: false,
+        code: "READ_ONLY_VIOLATION",
+        error: `Statement "${truncateSnippet(stmt)}" is not read-only (SELECT ... INTO creates a table). ` +
           "Only read-only statements (SELECT/WITH and the engine's allowed keywords) are permitted; use database_execute for writes.",
       };
     }

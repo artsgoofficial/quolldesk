@@ -292,26 +292,24 @@ function createDatabaseService(deps = {}) {
         }
       }
       if (dialect === "mssql") {
-        // mssql's ConnectionPool wraps a single connection, so BEGIN/ROLLBACK
-        // via separate pool requests carries the transaction state. The
-        // keyword gate above is the primary write block (no READ ONLY txn);
-        // the plain BEGIN + ROLLBACK wrapper is the backstop.
-        const pool = entry.client.pool;
-        const exec = (s) => pool.request().query(s);
-        await exec(txn.begin);
-        try {
-          const segments = await mssql.runQuery(pool, sql, timeoutMs);
-          const resultSets = segments.map((segment) => ({
-            columns: segment.columns || [],
-            rows: segment.rows || [],
-            rowCount: segment.rows?.length ?? 0,
-            okPacket: segment.okPacket || null,
-            truncated: Boolean(segment.truncated),
-          }));
-          return { ok: true, dialect, resultSets, executionTimeMs: Date.now() - startedAt, readOnly: true };
-        } finally {
-          await exec(txn.end).catch(() => {});
-        }
+        // mssql's ConnectionPool (min:0/max:10) hands every pool.request() an
+        // arbitrary idle connection — BEGIN/query/ROLLBACK as three separate
+        // pool requests would NOT share a transaction (the batch could land
+        // outside it; the ROLLBACK could leak one elsewhere). runReadOnlyBatch
+        // pins ONE connection via a tedious Transaction (same pattern as the
+        // bridge's applyTableChanges), runs the whole batch on it and always
+        // rolls back in finally: the keyword gate above is the primary write
+        // block (no server-side READ ONLY transaction on mssql) and the
+        // rollback is the backstop.
+        const segments = await mssql.runReadOnlyBatch(entry.client.pool, sql, timeoutMs);
+        const resultSets = segments.map((segment) => ({
+          columns: segment.columns || [],
+          rows: segment.rows || [],
+          rowCount: segment.rows?.length ?? 0,
+          okPacket: segment.okPacket || null,
+          truncated: Boolean(segment.truncated),
+        }));
+        return { ok: true, dialect, resultSets, executionTimeMs: Date.now() - startedAt, readOnly: true };
       }
       if (dialect === "sqlite") {
         // Same gate-primary model as mssql: BEGIN + ROLLBACK backstop around

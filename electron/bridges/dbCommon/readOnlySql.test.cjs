@@ -125,3 +125,33 @@ test('readOnlyTransaction: mssql/sqlite BEGIN/ROLLBACK', () => {
   assert.deepEqual(readOnlyTransaction('mssql'), { begin: 'BEGIN TRANSACTION', end: 'ROLLBACK' });
   assert.deepEqual(readOnlyTransaction('sqlite'), { begin: 'BEGIN', end: 'ROLLBACK' });
 });
+
+test('mssql gate: SELECT ... INTO rejected, quoted/comment "into" stays allowed', () => {
+  // SELECT ... INTO creates a table while leading with SELECT — mssql has no
+  // server-side READ ONLY transaction, so the keyword gate must reject it.
+  for (const bad of [
+    'SELECT * INTO t2 FROM t1',
+    'select top 5 * into dbo.copy from dbo.src',
+    'SELECT 1; SELECT * INTO t2 FROM t1',        // every statement checked
+    'WITH x AS (SELECT 1) SELECT * INTO t2 FROM x',
+    "SELECT * INTO [new table] FROM t1",          // bracketed target name
+  ]) {
+    const result = validateReadOnlySql('mssql', bad);
+    assert.equal(result.ok, false, bad);
+    assert.equal(result.code, 'READ_ONLY_VIOLATION', bad);
+    assert.match(result.error, /SELECT \.\.\. INTO/, bad);
+  }
+  for (const good of [
+    "SELECT * FROM t WHERE a IN ('into')",        // quoted 'into' is data, not the keyword
+    'SELECT "into" FROM t',                       // quoted identifier
+    'SELECT [into] FROM t',                       // bracket identifier named "into"
+    'SELECT id FROM t -- archive into t2 later',  // comment text
+    'SELECT /* into t2 */ id FROM t',
+    'SELECT id FROM t',                           // plain read untouched
+  ]) {
+    assert.equal(validateReadOnlySql('mssql', good).ok, true, good);
+  }
+  // mssql-gated only: other dialects keep their existing behavior (pg's
+  // SELECT ... INTO write is blocked by its authoritative BEGIN READ ONLY).
+  assert.equal(validateReadOnlySql('postgresql', 'SELECT * INTO t2 FROM t1').ok, true);
+});

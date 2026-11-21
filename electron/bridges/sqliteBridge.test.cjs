@@ -373,3 +373,91 @@ test("test channel closes its probe connection (no registry leak)", async (t) =>
   assert.equal(ping.ok, true, JSON.stringify(ping));
   assert.equal(registry.size(), 0, "test channel must not register a connection");
 });
+
+test("backup: BLOB columns dump as X'' literals (never ::bytea) and restore byte-identical", async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "nc-sqlite-bridge-blob-"));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const { pushes, call } = setup(69);
+
+  const srcFile = path.join(dir, "blob-src.db");
+  const conn = await call("quolldesk:sqlite:connect", { hostname: srcFile });
+  assert.equal(conn.ok, true, JSON.stringify(conn));
+  const connectionId = conn.data.connectionId;
+
+  await call("quolldesk:sqlite:query", {
+    connectionId,
+    sql: "CREATE TABLE profile(id INTEGER PRIMARY KEY, name TEXT, avatar BLOB)",
+  });
+  // Insert through the raw driver so a real binary value lands in the BLOB
+  // column (node:sqlite reads it back as a Uint8Array; Buffer is a subclass).
+  const avatar = Buffer.from([0x00, 0x0d, 0xde, 0xad, 0xbe, 0xef, 0xff]); // NUL + high bytes
+  const srcDb = registry.getConnection(connectionId).client.db;
+  srcDb.prepare("INSERT INTO profile (id, name, avatar) VALUES (?, ?, ?)").run(1, "ada", avatar);
+
+  const outFile = path.join(dir, "blob-dump.sql");
+  const job = await call("quolldesk:sqlite:backup", { connectionId, scope: "table", table: "profile", includeData: true, outFile });
+  assert.equal(job.ok, true, JSON.stringify(job));
+  await waitForPush(pushes, "done");
+
+  const dump = fs.readFileSync(outFile, "utf8");
+  const hex = avatar.toString("hex").toUpperCase();
+  assert.ok(dump.includes(`X'${hex}'`), `dump must carry the SQLite binary literal X'${hex}':\n${dump}`);
+  assert.ok(!dump.includes("::bytea"), "pg bytea form must never leak into a sqlite dump");
+  assert.ok(!dump.includes("\\x"), "pg \\x hex form must never leak into a sqlite dump");
+
+  // Restore into a brand-new database and read the bytes back byte-identical.
+  const dstFile = path.join(dir, "restored-blob.db");
+  const conn2 = await call("quolldesk:sqlite:connect", { hostname: dstFile });
+  assert.equal(conn2.ok, true, JSON.stringify(conn2));
+  const connectionId2 = conn2.data.connectionId;
+  pushes.length = 0;
+  const restore = await call("quolldesk:sqlite:restore", { connectionId: connectionId2, inFile: outFile });
+  assert.equal(restore.ok, true, JSON.stringify(restore));
+  await waitForPush(pushes, "done");
+
+  const dstDb = registry.getConnection(connectionId2).client.db;
+  const row = dstDb.prepare("SELECT name, avatar FROM profile WHERE id = 1").get();
+  assert.ok(ArrayBuffer.isView(row.avatar), "restored BLOB must come back as a binary view");
+  assert.ok(Buffer.from(row.avatar.buffer, row.avatar.byteOffset, row.avatar.byteLength).equals(avatar),
+    "restored BLOB must be byte-identical to the source bytes");
+  // Grid path shape: serializeCellValue renders the binary value as JSON text.
+  const grid = await call("quolldesk:sqlite:tableRows", { connectionId: connectionId2, table: "profile" });
+  const cell = JSON.parse(grid.data.rows[0][2]);
+  assert.deepEqual(Object.values(cell), [...avatar]);
+
+  await call("quolldesk:sqlite:disconnect", { connectionId });
+  await call("quolldesk:sqlite:disconnect", { connectionId2 });
+});
+
+test("INTEGER beyond double precision reads back as a string, no driver throw", async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "nc-sqlite-bridge-bigint-"));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const { call } = setup(70);
+
+  const dbFile = path.join(dir, "bigint.db");
+  const conn = await call("quolldesk:sqlite:connect", { hostname: dbFile });
+  assert.equal(conn.ok, true, JSON.stringify(conn));
+  const connectionId = conn.data.connectionId;
+  const db = registry.getConnection(connectionId).client.db;
+  const BIG = 9007199254740993n; // 2^53 + 1 — unrepresentable as a JS number
+  db.exec("CREATE TABLE nums(id INTEGER PRIMARY KEY, big INTEGER)");
+  db.prepare("INSERT INTO nums (big) VALUES (?)").run(BIG);
+
+  // Sanity: the raw driver really throws without setReadBigInts on this ABI.
+  const probe = db.prepare("SELECT big FROM nums");
+  if (typeof probe.setReadBigInts === "function") {
+    probe.setReadBigInts(false);
+    assert.throws(() => probe.all(), /too large to be represented/i);
+  }
+
+  const rows = await call("quolldesk:sqlite:tableRows", { connectionId, table: "nums" });
+  assert.equal(rows.ok, true, JSON.stringify(rows));
+  assert.equal(rows.data.rows[0][0], "1");
+  assert.equal(rows.data.rows[0][1], "9007199254740993", "value must survive as its exact digits");
+
+  const qry = await call("quolldesk:sqlite:query", { connectionId, sql: "SELECT big FROM nums WHERE id = 1" });
+  assert.equal(qry.ok, true, JSON.stringify(qry));
+  assert.equal(qry.data.resultSets[0].rows[0][0], "9007199254740993");
+
+  await call("quolldesk:sqlite:disconnect", { connectionId });
+});

@@ -315,32 +315,93 @@ test("redis_key_get reads type/ttl/value and reports missing keys", async () => 
 
 // ---- new-dialect fakes / helpers ----
 
-/** mssql pool compatible with mssqlBridge.runLimitedQuery / runQuery. */
+/**
+ * mssql pool compatible with mssqlBridge.runLimitedQuery / runQuery, modelling
+ * tedious's min:0/max:10 pool with >1 underlying connections: every
+ * pool.request() round-robins to the NEXT connection, so separate pool
+ * requests can land on different connections. A Transaction from
+ * makeFakeMssqlTxDriver instead leases ONE connection at begin() and holds it
+ * until rollback/commit — the exact binding runReadOnlyBatch relies on.
+ */
 function makeFakeMssqlPool() {
   const calls = [];
-  return {
+  const connections = Array.from({ length: 3 }, () => ({ calls: [], leasedBy: null }));
+  let next = 0;
+  const respond = (text) => {
+    if (/^BEGIN TRANSACTION$/i.test(text) || /^ROLLBACK$/i.test(text)) return { recordsets: [], rowsAffected: [0] };
+    if (/INFORMATION_SCHEMA\.TABLES/i.test(text)) {
+      return { recordsets: [[{ schema: "dbo", name: "users", kind: "BASE TABLE" }]], rowsAffected: [0] };
+    }
+    if (/INFORMATION_SCHEMA\.COLUMNS/i.test(text)) {
+      return { recordsets: [[{ COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null }]], rowsAffected: [0] };
+    }
+    if (/TABLE_CONSTRAINTS/i.test(text)) {
+      return { recordsets: [[{ column_name: "id" }]], rowsAffected: [0] };
+    }
+    if (/^SELECT/i.test(text)) return { recordsets: [[{ id: 1, name: "a" }]], rowsAffected: [0] };
+    return { recordsets: [], rowsAffected: [3] };
+  };
+  const pool = {
     calls,
+    connections,
+    transactions: [],
+    respond,
     request() {
+      // pool.request() takes an ARBITRARY connection — round-robining here
+      // proves runReadOnlyBatch cannot rely on pool-request affinity.
+      const conn = connections[next % connections.length];
+      next += 1;
       return {
         async query(sql) {
           const text = String(sql);
           calls.push(text);
-          if (/^BEGIN TRANSACTION$/i.test(text) || /^ROLLBACK$/i.test(text)) return { recordsets: [], rowsAffected: [0] };
-          if (/INFORMATION_SCHEMA\.TABLES/i.test(text)) {
-            return { recordsets: [[{ schema: "dbo", name: "users", kind: "BASE TABLE" }]], rowsAffected: [0] };
-          }
-          if (/INFORMATION_SCHEMA\.COLUMNS/i.test(text)) {
-            return { recordsets: [[{ COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null }]], rowsAffected: [0] };
-          }
-          if (/TABLE_CONSTRAINTS/i.test(text)) {
-            return { recordsets: [[{ column_name: "id" }]], rowsAffected: [0] };
-          }
-          if (/^SELECT/i.test(text)) return { recordsets: [[{ id: 1, name: "a" }]], rowsAffected: [0] };
-          return { recordsets: [], rowsAffected: [3] };
+          conn.calls.push(text);
+          return respond(text);
         },
       };
     },
   };
+  return pool;
+}
+
+/**
+ * Minimal tedious-shaped driver for mssqlBridge.runReadOnlyBatch: new
+ * Transaction(pool).begin() acquires and holds ONE underlying connection;
+ * new Request(tx) executes on exactly that connection (BEGIN/ROLLBACK log
+ * onto it the way the real driver's begin/rollback wire messages do).
+ */
+function makeFakeMssqlTxDriver() {
+  class Transaction {
+    constructor(pool) { this.pool = pool; this.conn = null; pool.transactions.push(this); }
+    async begin() {
+      const free = this.pool.connections.find((c) => c.leasedBy === null);
+      if (!free) throw new Error("pool exhausted: no free connection");
+      free.leasedBy = this;
+      this.conn = free;
+      this.pool.calls.push("BEGIN TRANSACTION");
+      this.conn.calls.push("BEGIN TRANSACTION");
+    }
+    async rollback() { this.release("ROLLBACK"); }
+    async commit() { this.release("COMMIT"); }
+    release(marker) {
+      if (!this.conn) return;
+      this.pool.calls.push(marker);
+      this.conn.calls.push(marker);
+      this.conn.leasedBy = null;
+      this.conn = null;
+    }
+  }
+  class Request {
+    constructor(tx, _overrides) { this.tx = tx; }
+    async query(sql) {
+      const text = String(sql);
+      if (!this.tx.conn) throw new Error("transaction has no leased connection");
+      this.tx.pool.calls.push(text);
+      this.tx.conn.calls.push(text);
+      return this.tx.pool.respond(text);
+    }
+  }
+  return { Transaction, Request };
 }
 
 /** Real node:sqlite DatabaseSync over a temp file, registered in the registry. */
@@ -470,8 +531,9 @@ test("mssql schema calls runLimitedQuery metadata and maps rows", async () => {
   assert.match(pool.calls.at(-1), /TABLE_CONSTRAINTS/);
 });
 
-test("mssql query wraps BEGIN TRANSACTION → batch → ROLLBACK and rejects writes", async () => {
+test("mssql query binds BEGIN/query/ROLLBACK to ONE connection and rejects writes", async () => {
   const { service, registry } = setup();
+  const mssqlBridge = require("../../bridges/mssqlBridge.cjs");
   const pool = makeFakeMssqlPool();
   const mssqlId = registry.registerConnection({
     dialect: "mssql", senderId: 1, client: { pool }, close() {},
@@ -482,14 +544,34 @@ test("mssql query wraps BEGIN TRANSACTION → batch → ROLLBACK and rejects wri
   assert.equal(denied.code, "READ_ONLY_VIOLATION");
   assert.deepEqual(pool.calls, []); // keyword gate fires before any pool request
 
-  const res = await service.query({ connectionId: mssqlId, sql: "SELECT id FROM users" });
-  assert.equal(res.ok, true);
-  assert.equal(res.dialect, "mssql");
-  assert.equal(res.readOnly, true);
-  assert.equal(pool.calls[0], "BEGIN TRANSACTION");
-  assert.equal(pool.calls.at(-1), "ROLLBACK");
-  assert.deepEqual(res.resultSets[0].columns, [{ name: "id" }, { name: "name" }]);
-  assert.deepEqual(res.resultSets[0].rows, [{ id: "1", name: "a" }]);
+  mssqlBridge._setDriverForTests(makeFakeMssqlTxDriver());
+  try {
+    const res = await service.query({ connectionId: mssqlId, sql: "SELECT id FROM users" });
+    assert.equal(res.ok, true);
+    assert.equal(res.dialect, "mssql");
+    assert.equal(res.readOnly, true);
+    assert.equal(pool.calls[0], "BEGIN TRANSACTION");
+    assert.equal(pool.calls.at(-1), "ROLLBACK");
+    assert.deepEqual(res.resultSets[0].columns, [{ name: "id" }, { name: "name" }]);
+    assert.deepEqual(res.resultSets[0].rows, [{ id: "1", name: "a" }]);
+
+    // The pool round-robins pool.request() over 3 underlying connections, so
+    // the whole read-only batch (BEGIN → SELECT → ROLLBACK) landing on exactly
+    // ONE of them proves the Transaction pinned a single connection — a
+    // scattered batch would run outside the transaction (SELECT ... INTO
+    // would persist) and leave the ROLLBACK leaking on another connection.
+    const touched = pool.connections.filter((c) => c.calls.length > 0);
+    assert.equal(touched.length, 1);
+    assert.deepEqual(touched[0].calls, ["BEGIN TRANSACTION", "SELECT id FROM users", "ROLLBACK"]);
+
+    // The read path never commits and releases its leased connection (no
+    // leaked transaction blocking applyTableChanges).
+    assert.ok(!pool.calls.includes("COMMIT"));
+    assert.equal(pool.transactions.length, 1);
+    assert.ok(pool.connections.every((c) => c.leasedBy === null));
+  } finally {
+    mssqlBridge._setDriverForTests(undefined);
+  }
 });
 
 test("mssql execute returns the rowsAffected aggregate", async () => {

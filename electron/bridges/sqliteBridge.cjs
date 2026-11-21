@@ -64,11 +64,33 @@ function openDatabase(opts) {
   return { db, filePath, readOnly };
 }
 
+/**
+ * sqlite INSERT literal adapter for buildInsertStatements: shared sqlLiteral
+ * renders binary values in pg form — Buffer → `'\x..'::bytea` — which SQLite
+ * cannot parse, and node:sqlite hands BLOB columns back as Uint8Array (Buffer
+ * is a Uint8Array subclass, so one check covers both), which plain sqlLiteral
+ * would JSON-stringify into garbage. The SQLite binary literal is
+ * X'<upper hex>'. Everything else falls through to sqlLiteral (sqlite reads
+ * '\' literally, so no backslash escaping).
+ */
+function sqliteLiteral(value) {
+  if ((typeof Buffer !== "undefined" && Buffer.isBuffer(value)) || value instanceof Uint8Array) {
+    return `X'${Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("hex").toUpperCase()}'`;
+  }
+  return sqlLiteral(value);
+}
+
 // SELECT/WITH/PRAGMA/EXPLAIN/VALUES/TABLE → all()(返回结果集);其余 → run()(返回 changes)。
 const READ_KEYWORD = /^(select|with|pragma|explain|values|table)\b/i;
 function runOne(db, sql, values) {
   if (READ_KEYWORD.test(sql)) {
     const stmt = db.prepare(sql);
+    // node:sqlite throws "Value is too large to be represented as a JavaScript
+    // number" when a statement reads an INTEGER outside the double-precision
+    // range — readBigInts returns those (and, with it enabled, every INTEGER)
+    // as BigInt instead; serializeCellValue already stringifies BigInt. The
+    // guard keeps older ABI builds without the setter working.
+    if (typeof stmt.setReadBigInts === "function") stmt.setReadBigInts(true);
     const rows = values && values.length ? stmt.all(...values) : stmt.all();
     const rawColumns = (typeof stmt.columns === "function" ? stmt.columns() : (rows[0] ? Object.keys(rows[0]) : []));
     const columns = rawColumns.map((c) => ({ name: typeof c === "string" ? c : c.name }));
@@ -80,11 +102,20 @@ function runOne(db, sql, values) {
     };
   }
   const stmt = db.prepare(sql);
+  // Consistent with the read path above; run()'s affected counts come back
+  // through Number() below, so BigInt changes are harmless here too.
+  if (typeof stmt.setReadBigInts === "function") stmt.setReadBigInts(true);
   const res = values && values.length ? stmt.run(...values) : stmt.run();
   return { columns: [], rows: [], affectedRows: Number(res?.changes ?? 0), truncated: false };
 }
 
-/** databaseService(AI/MCP)消费:一次性执行多语句(只读门由调用方负责)。 */
+/**
+ * databaseService (AI/MCP) consumes this: executes exactly ONE statement and
+ * returns its single result set wrapped in a one-element array — runAll never
+ * splits scripts itself; the caller (databaseService) splits multi-statement
+ * SQL with splitSqlStatements first and invokes runAll once per statement.
+ * Read-only gating is the caller's responsibility.
+ */
 function runAll(db, sql) { return [runOne(db, sql)]; }
 
 function toResultSets(db, statements, values) {
@@ -163,12 +194,12 @@ async function runSqliteBackup({ event, db, filePath, connectionId, jobId, scope
             : db.prepare(`SELECT * FROM ${q(entry.name)} LIMIT ? OFFSET ?`).all(DUMP_PAGE_SIZE, rowsDone);
           if (pageRows.length > 0) {
             // value arrays in table_info column order (raw driver values —
-            // sqlLiteral renders numbers/strings; sqlite reads '\' literally,
-            // so no backslash escaping).
+            // sqliteLiteral renders numbers/strings, BLOBs as X'<hex>';
+            // sqlite reads '\' literally, so no backslash escaping).
             const valueRows = pageRows.map((row) => cols.map((name) => row[name]));
             const statements = buildInsertStatements({
               tableRef: q(entry.name), quote: q, columns: cols, rows: valueRows,
-              literal: (v) => sqlLiteral(v),
+              literal: sqliteLiteral,
               batchSize: DUMP_INSERT_BATCH,
             });
             for (const statement of statements) await writer.write(statement + "\n");

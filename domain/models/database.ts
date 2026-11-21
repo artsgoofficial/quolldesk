@@ -1,7 +1,7 @@
 import type { HostProtocol } from './connection';
 import type { TerminalSession } from './terminal';
 
-export type DbProtocol = 'redis' | 'mysql' | 'postgresql';
+export type DbProtocol = 'redis' | 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite';
 
 /** Workbench connection lifecycle (useDatabaseWorkbenchState). */
 export type DbWorkbenchStatus = 'idle' | 'connecting' | 'connected' | 'error' | 'disconnected';
@@ -23,14 +23,16 @@ export interface RedisConnectionConfig extends DbConnectionBase {
 
 export interface SqlConnectionConfig extends DbConnectionBase {
   database?: string;
+  /** SQLite 数据库文件路径(sqlite 引擎专用)。 */
+  filePath?: string;
 }
 
-export const DB_DEFAULT_PORTS: Record<DbProtocol, number> = {
-  redis: 6379, mysql: 3306, postgresql: 5432,
+export const DB_DEFAULT_PORTS: Record<DbProtocol, number | null> = {
+  redis: 6379, mysql: 3306, postgresql: 5432, mariadb: 3306, mssql: 1433, sqlite: null,
 };
 
 const isDbProtocolValue = (p: unknown): p is DbProtocol =>
-  p === 'redis' || p === 'mysql' || p === 'postgresql';
+  p === 'redis' || p === 'mysql' || p === 'postgresql' || p === 'mariadb' || p === 'mssql' || p === 'sqlite';
 
 export const isDbProtocol = (p: HostProtocol | undefined): p is DbProtocol => isDbProtocolValue(p);
 
@@ -99,6 +101,7 @@ export function normalizeSqlConfig(raw: unknown): SqlConnectionConfig | undefine
   const rec = raw as Record<string, unknown>;
   const out: SqlConnectionConfig = { ...sanitizeBase(rec) };
   if (typeof rec.database === 'string' && rec.database.trim()) out.database = rec.database.trim();
+  if (typeof rec.filePath === 'string' && rec.filePath.trim()) out.filePath = rec.filePath.trim();
   return out;
 }
 
@@ -107,7 +110,8 @@ export function hostsForDbSection<T extends { protocol?: HostProtocol }>(
 ): T[] {
   return hosts.filter(h =>
     section === 'redis' ? h.protocol === 'redis'
-      : h.protocol === 'mysql' || h.protocol === 'postgresql');
+      : h.protocol === 'mysql' || h.protocol === 'postgresql' || h.protocol === 'mariadb'
+        || h.protocol === 'mssql' || h.protocol === 'sqlite');
 }
 
 export function filterOutDbHosts<T extends { protocol?: HostProtocol }>(hosts: T[]): T[] {

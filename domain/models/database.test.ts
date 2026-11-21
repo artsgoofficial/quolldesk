@@ -16,7 +16,9 @@ describe('db protocol helpers', () => {
     assert.equal(isDbProtocol(undefined), false);
   });
   it('exposes default ports', () => {
-    assert.deepEqual(DB_DEFAULT_PORTS, { redis: 6379, mysql: 3306, postgresql: 5432 });
+    assert.deepEqual(DB_DEFAULT_PORTS, {
+      redis: 6379, mysql: 3306, postgresql: 5432, mariadb: 3306, mssql: 1433, sqlite: null,
+    });
   });
 });
 

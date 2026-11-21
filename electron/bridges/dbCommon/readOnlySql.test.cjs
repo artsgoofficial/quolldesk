@@ -78,6 +78,40 @@ test('readonly keywords per new dialect', () => {
   assert.equal(validateReadOnlySql('mssql', 'SELECT TOP 1 * FROM t').ok, true);
   assert.equal(validateReadOnlySql('mssql', 'EXEC dbo.do').ok, false);
 });
+
+test('sqlite gate: assignment-form PRAGMA rejected, read forms allowed', () => {
+  // PRAGMA assignment forms mutate engine/database state — database.query is
+  // policy write:false, so the keyword gate must reject them (sqlite has no
+  // server-side READ ONLY transaction; this gate is the primary enforcement).
+  for (const bad of [
+    'PRAGMA user_version=5',
+    'PRAGMA user_version = 5',
+    'PRAGMA journal_mode=WAL',
+    'PRAGMA application_id=1234',
+    '-- note: a=b\nPRAGMA user_version=5', // leading comment stripped, assignment still caught
+    'PRAGMA page_size /* c=d */ = 4096',   // unquoted = outside a block comment
+    'SELECT 1; PRAGMA user_version=5',     // every statement in the script checked
+  ]) {
+    const result = validateReadOnlySql('sqlite', bad);
+    assert.equal(result.ok, false, bad);
+    assert.equal(result.code, 'READ_ONLY_VIOLATION', bad);
+  }
+  for (const good of [
+    'PRAGMA table_info("t")',      // function-form read (service metadata path)
+    'PRAGMA table_info(t)',
+    'PRAGMA journal_mode',         // bare read
+    'PRAGMA foo(\'a=b\')',         // quoted = is data, not an assignment
+    'PRAGMA foo("x=y")',
+    "PRAGMA index_info('idx')",
+    'PRAGMA schema.foreign_keys',  // qualified bare read
+    'SELECT 1; PRAGMA user_version', // mixed script stays allowed
+  ]) {
+    assert.equal(validateReadOnlySql('sqlite', good).ok, true, good);
+  }
+  // mysql/pg/mssql unaffected: PRAGMA is not even an allowed keyword there.
+  assert.equal(validateReadOnlySql('mysql', 'PRAGMA user_version=5').ok, false);
+  assert.equal(validateReadOnlySql('postgresql', 'PRAGMA user_version=5').ok, false);
+});
 test('split: mssql brackets keep semicolons inside identifiers', () => {
   const out = splitSqlStatements('SELECT [a;b] FROM t; SELECT 2;', 'mssql');
   assert.equal(out.length, 2);

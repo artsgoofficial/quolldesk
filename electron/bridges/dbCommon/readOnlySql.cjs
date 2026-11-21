@@ -94,10 +94,53 @@ function splitSqlStatements(sql, dialect) {
   return statements;
 }
 
+function stripLeadingTrivia(statement) {
+  return statement.replace(/^(?:\s|--[^\n]*\n?|\/\*[\s\S]*?\*\/)+/i, "");
+}
+
 function leadingKeyword(statement) {
-  const stripped = statement.replace(/^(?:\s|--[^\n]*\n?|\/\*[\s\S]*?\*\/)+/i, "");
+  const stripped = stripLeadingTrivia(statement);
   const m = stripped.match(/^[A-Za-z_]+/);
   return m ? m[0].toLowerCase() : null;
+}
+
+/**
+ * Scan `text` for an `=` outside quoted segments and comments. sqlite reads
+ * '\' as a literal, '' / "" are the doubled-quote escapes, [brackets] quote
+ * identifiers, and -- / *··* comments are skipped — so `PRAGMA foo('a=b')`
+ * stays a read while `PRAGMA user_version=5` is an assignment.
+ */
+function hasUnquotedEquals(text) {
+  let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i], next = text[i + 1];
+    if (inLineComment) { if (ch === "\n") inLineComment = false; i += 1; continue; }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") { inBlockComment = false; i += 2; continue; }
+      i += 1; continue;
+    }
+    if (inSingle) {
+      if (ch === "'") { if (next === "'") { i += 2; continue; } inSingle = false; }
+      i += 1; continue;
+    }
+    if (inDouble) {
+      if (ch === '"') { if (next === '"') { i += 2; continue; } inDouble = false; }
+      i += 1; continue;
+    }
+    if (ch === "-" && next === "-") { inLineComment = true; i += 2; continue; }
+    if (ch === "/" && next === "*") { inBlockComment = true; i += 2; continue; }
+    if (ch === "'") { inSingle = true; i += 1; continue; }
+    if (ch === '"') { inDouble = true; i += 1; continue; }
+    if (ch === "[") { // [bracket identifier] — contents are a name, never an operator
+      i += 1;
+      while (i < text.length && text[i] !== "]") i += 1;
+      i += 1; continue;
+    }
+    if (ch === "=") return true;
+    i += 1;
+  }
+  return false;
 }
 
 function truncateSnippet(s) {
@@ -122,6 +165,19 @@ function validateReadOnlySql(dialect, sql) {
         ok: false,
         code: "READ_ONLY_VIOLATION",
         error: `Statement "${truncateSnippet(stmt)}" is not read-only (keyword: ${kw || "unknown"}). ` +
+          "Only read-only statements (SELECT/WITH and the engine's allowed keywords) are permitted; use database_execute for writes.",
+      };
+    }
+    // sqlite PRAGMA reads come in bare / function-call forms; the assignment
+    // form (`PRAGMA user_version=5`, `PRAGMA journal_mode=WAL`) mutates
+    // state, and sqlite has no server-side READ ONLY transaction — so the
+    // gate itself must reject any unquoted `=` (quoted '=' is data, comments
+    // are ignored). Function-form and bare reads stay allowed.
+    if (dialect === "sqlite" && kw === "pragma" && hasUnquotedEquals(stripLeadingTrivia(stmt))) {
+      return {
+        ok: false,
+        code: "READ_ONLY_VIOLATION",
+        error: `Statement "${truncateSnippet(stmt)}" is not read-only (PRAGMA assignment form; only bare or function-call PRAGMA reads are allowed). ` +
           "Only read-only statements (SELECT/WITH and the engine's allowed keywords) are permitted; use database_execute for writes.",
       };
     }

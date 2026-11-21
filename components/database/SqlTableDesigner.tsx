@@ -410,9 +410,10 @@ export const buildAlterMssql = (
 
 // SQLite ALTER walk: only ADD COLUMN / DROP COLUMN / CREATE INDEX / DROP
 // INDEX exist (and DROP COLUMN needs SQLite 3.35+, never for PK columns).
-// Everything else — column type/nullable/default edits, PK moves — requires
-// a table rebuild and throws SQLITE_COLUMN_REBUILD_REQUIRED (the component
-// blocks with the localized message before any DDL is built).
+// Everything else — column type/nullable/default edits, PK moves, and ADD
+// COLUMN NOT NULL without a DEFAULT (rejected outright by SQLite) — throws
+// SQLITE_COLUMN_REBUILD_REQUIRED (the component blocks with the localized
+// message before any DDL is built).
 export const buildAlterSqlite = (
   table: string,
   original: OriginalTable,
@@ -431,6 +432,9 @@ export const buildAlterSqlite = (
     if (!name) continue;
     const before = originalByName.get(name);
     if (!before) {
+      // SQLite rejects ADD COLUMN ... NOT NULL without a DEFAULT outright
+      // ("Cannot add a NOT NULL column with default value NULL").
+      if (!col.nullable && !col.defaultValue.trim()) throw new Error('SQLITE_COLUMN_REBUILD_REQUIRED');
       statements.push(alter(`ADD COLUMN ${columnDefSql('sqlite', col)}`));
       continue;
     }
@@ -486,11 +490,17 @@ export const designerBlockedReason = (
       const name = col.name.trim();
       if (!name) continue;
       const before = originalByName.get(name);
+      if (!before) {
+        // A NEW NOT NULL column without a DEFAULT is rejected outright by
+        // SQLite ("Cannot add a NOT NULL column with default value NULL") —
+        // block it like the rebuild cases instead of previewing dead DDL.
+        if (!col.nullable && !col.defaultValue.trim()) return 'db.designer.sqliteColumnRebuild';
+        continue;
+      }
       if (
-        before
-        && (before.type !== col.type.trim()
-          || before.nullable !== col.nullable
-          || before.defaultValue.trim() !== col.defaultValue.trim())
+        before.type !== col.type.trim()
+        || before.nullable !== col.nullable
+        || before.defaultValue.trim() !== col.defaultValue.trim()
       ) {
         return 'db.designer.sqliteColumnRebuild';
       }

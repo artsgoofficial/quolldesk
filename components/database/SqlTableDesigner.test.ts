@@ -286,6 +286,30 @@ test('sqlite alter returns an empty string when nothing changed', () => {
 
 // ——— designerBlockedReason (block BEFORE building DDL) ————————————————
 
+test('designerBlockedReason blocks NEW NOT NULL columns without a default on sqlite', () => {
+  // SQLite categorically rejects "Cannot add a NOT NULL column with default value NULL".
+  const notNullNoDefault = [...unchangedCols(), { name: 'score', type: 'TEXT', nullable: false, defaultValue: '', pk: false }];
+  assert.equal(designerBlockedReason('sqlite', baseOriginal(), notNullNoDefault), 'db.designer.sqliteColumnRebuild');
+  // Nullable new columns and NOT NULL WITH a default stay allowed.
+  const nullable = [...unchangedCols(), { name: 'score', type: 'TEXT', nullable: true, defaultValue: '', pk: false }];
+  assert.equal(designerBlockedReason('sqlite', baseOriginal(), nullable), null);
+  const withDefault = [...unchangedCols(), { name: 'score', type: 'TEXT', nullable: false, defaultValue: '0', pk: false }];
+  assert.equal(designerBlockedReason('sqlite', baseOriginal(), withDefault), null);
+  // mssql is untouched: its ADD NOT NULL is valid T-SQL.
+  assert.equal(designerBlockedReason('mssql', baseOriginal(), notNullNoDefault), null);
+});
+
+test('buildAlterSqlite throws for a NEW NOT NULL column without a default (backstop)', () => {
+  const cols = [...unchangedCols(), { name: 'score', type: 'TEXT', nullable: false, defaultValue: '', pk: false }];
+  assert.throws(() => buildAlterSqlite('artworks', baseOriginal(), cols, [], sqliteRef), /SQLITE_COLUMN_REBUILD_REQUIRED/);
+  // ...while the valid shapes still build.
+  const withDefault = [...unchangedCols(), { name: 'score', type: 'TEXT', nullable: false, defaultValue: '0', pk: false }];
+  assert.equal(
+    buildAlterSqlite('artworks', baseOriginal(), withDefault, [], sqliteRef),
+    `ALTER TABLE ${sqliteRef} ADD COLUMN "score" TEXT NOT NULL DEFAULT 0;`,
+  );
+});
+
 test('designerBlockedReason blocks column edits and PK moves on sqlite', () => {
   const typeChange = unchangedCols().map((c) => (c.name === 'title' ? { ...c, type: 'TEXT' } : c));
   assert.equal(designerBlockedReason('sqlite', baseOriginal(), typeChange), 'db.designer.sqliteColumnRebuild');

@@ -35,6 +35,11 @@ test('db protocol: new engines recognized and sectioned', () => {
   assert.equal(hostsForDbSection(hosts, 'databases').length, 3);
 });
 
+test('registry: mssql advertises no tunnel (tedious cannot inject sockets — Ruling 8)', () => {
+  assert.equal(SQL_ENGINE_BY_ID.mssql.features.tunnel, false);
+  assert.equal(SQL_ENGINE_BY_ID.mssql.features.tls, true);
+});
+
 test('registry: isSqlEngineId rejects inherited Object.prototype keys', () => {
   // SQL_ENGINE_BY_ID is built with Object.fromEntries (plain prototype);
   // `in` would let 'constructor'/'toString'/'__proto__' pass the guard.

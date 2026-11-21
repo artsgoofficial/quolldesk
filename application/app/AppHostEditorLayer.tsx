@@ -10,6 +10,8 @@ import { SqlHostDetailsPanel } from '../../components/database/SqlHostDetailsPan
 import SerialHostDetailsPanel from '../../components/SerialHostDetailsPanel';
 import { PortalContainerProvider } from '../../components/ui/portal-container';
 import { resolveGroupDefaults } from '../../domain/groupConfig';
+import { isDbProtocol } from '../../domain/models/database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { STORAGE_KEY_VAULT_HOST_PANEL_WIDTH } from '@/infrastructure/config/storageKeys';
 import type {
   GroupConfig,
@@ -34,6 +36,16 @@ export function resolveWorkSurfaceHostEditorKind(
     : target.mode === 'edit' && target.openedHost.protocol === 'local'
       ? 'local'
       : 'standard';
+}
+
+/** SQL host edit routing: every db protocol except redis opens the SQL editor. */
+export function isSqlHostEditorTarget(protocol: Host['protocol'] | undefined): boolean {
+  return isDbProtocol(protocol) && protocol !== 'redis';
+}
+
+/** Dialect for the SQL editor: the host's real engine id (redis never routes here). */
+export function resolveSqlHostEditorDialect(protocol: Host['protocol'] | undefined): SqlEngineId {
+  return isDbProtocol(protocol) && protocol !== 'redis' ? protocol : 'mysql';
 }
 
 function addGroupAndAncestors(groups: Set<string>, path: string | null | undefined) {
@@ -188,13 +200,14 @@ export const AppHostEditorLayer: React.FC<AppHostEditorLayerProps> = ({
             className="pointer-events-auto"
             {...hostPanelResizeProps}
           />
-        ) : target.mode === 'edit' && (target.openedHost.protocol === 'mysql' || target.openedHost.protocol === 'postgresql') ? (
-          // DB connections get the dialect-aware SQL editor (label/host/port/
-          // credentials/database/TLS + 测试连接) instead of the SSH host panel.
+        ) : target.mode === 'edit' && isSqlHostEditorTarget(target.openedHost.protocol) ? (
+          // DB connections get the dialect-aware SQL editor (registry-driven:
+          // hostPort engines get host/port/credentials/database/TLS, SQLite
+          // gets a file picker) instead of the SSH host panel.
           <SqlHostDetailsPanel
             key={editorKey}
             initialData={target.openedHost}
-            dialect={target.openedHost.protocol === 'postgresql' ? 'postgresql' : 'mysql'}
+            dialect={resolveSqlHostEditorDialect(target.openedHost.protocol)}
             sshHosts={hosts.filter((candidate) => candidate.protocol === 'ssh')}
             onSave={onSave}
             onCancel={onCancel}

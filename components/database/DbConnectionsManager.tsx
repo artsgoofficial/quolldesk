@@ -11,22 +11,30 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
 import { upsertHostById } from '../../domain/host';
 import { hostsForDbSection, sshTunnelCandidates } from '../../domain/models/database';
+import { SQL_ENGINE_BY_ID, SQL_ENGINES, isSqlEngineId, type SqlEngineId } from '../../domain/models/dbEngines';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { ConfirmDialog } from '../ui/confirm-dialog';
+import { resolveSqlEngineForEdit } from './SqlHostDetailsPanel';
+
+/** Row address line: file-backed engines (SQLite) live at a path, not host:port. */
+export const dbRowAddressLine = (host: Pick<Host, 'hostname' | 'port' | 'protocol'>): string => {
+  const engine = isSqlEngineId(host.protocol) ? SQL_ENGINE_BY_ID[host.protocol] : undefined;
+  return engine?.addressMode === 'file' ? host.hostname : `${host.hostname}:${host.port}`;
+};
 
 interface DbConnectionsManagerProps {
   section: 'redis' | 'databases';
-  /** Row meta line after host:port (cluster / database / tunnel markers). */
+  /** Row meta line after the address line (cluster / database / tunnel markers). */
   metaLine: (host: Host) => string;
   /** Optional leading row badge (protocol label for SQL hosts). */
   badgeLabel?: (host: Host) => string;
-  /** "New" first picks a SQL dialect (databases); otherwise creates directly. */
+  /** "New" first picks a SQL engine (databases); otherwise creates directly. */
   pickDialect?: boolean;
-  /** Section details panel (create/edit form), rendered with the active dialect. */
+  /** Section details panel (create/edit form), rendered with the active engine id. */
   detailsPanel: (opts: {
     editing: Host | null;
-    dialect: 'mysql' | 'postgresql';
+    dialect: SqlEngineId;
     sshHosts: Host[];
     onSave: (host: Host) => void;
     onCancel: () => void;
@@ -48,8 +56,8 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
   const sshHosts = useMemo(() => sshTunnelCandidates(hosts), [hosts]);
   const [editing, setEditing] = useState<Host | null>(null);
   const [creating, setCreating] = useState(false);
-  const [pendingDialect, setPendingDialect] = useState<'mysql' | 'postgresql' | null>(null);
-  const [newDialect, setNewDialect] = useState<'mysql' | 'postgresql'>('mysql');
+  const [pendingDialect, setPendingDialect] = useState<SqlEngineId | null>(null);
+  const [newDialect, setNewDialect] = useState<SqlEngineId>('mysql');
   const [deleteTarget, setDeleteTarget] = useState<Host | null>(null);
 
   const save = (host: Host) => {
@@ -84,8 +92,12 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
       </div>
       {pendingDialect && !editing && (
         <div className="absolute right-4 top-12 z-30 rounded-md border border-border/60 bg-background p-2 flex gap-2 shadow">
-          <Button size="sm" variant="outline" onClick={() => { setCreating(true); setPendingDialect(null); setNewDialect('mysql'); }}>MySQL</Button>
-          <Button size="sm" variant="outline" onClick={() => { setCreating(true); setPendingDialect(null); setNewDialect('postgresql'); }}>PostgreSQL</Button>
+          {SQL_ENGINES.map((engine) => (
+            <Button key={engine.id} size="sm" variant="outline"
+              onClick={() => { setCreating(true); setPendingDialect(null); setNewDialect(engine.id); }}>
+              {engine.label}
+            </Button>
+          ))}
         </div>
       )}
       {sectionHosts.length === 0 ? (
@@ -99,7 +111,7 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
               <div className="min-w-0 flex-1">
                 <p className="text-sm truncate">{host.label || host.hostname}</p>
                 <p className="text-xs text-muted-foreground truncate">
-                  {host.hostname}:{host.port}{metaLine(host)}
+                  {dbRowAddressLine(host)}{metaLine(host)}
                 </p>
               </div>
               <Button variant="ghost" size="icon" aria-label={t('db.action.connect')} onClick={() => onConnect(host)}>
@@ -121,7 +133,7 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
       )}
       {(creating || editing) && detailsPanel({
         editing,
-        dialect: editing ? (editing.protocol === 'postgresql' ? 'postgresql' : 'mysql') : newDialect,
+        dialect: editing ? resolveSqlEngineForEdit(editing, newDialect) : newDialect,
         sshHosts,
         onSave: save,
         onCancel: () => { setCreating(false); setEditing(null); },

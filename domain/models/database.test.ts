@@ -56,6 +56,16 @@ describe('normalizeSqlConfig', () => {
     assert.deepEqual(cfg, { database: 'app', tls: false });
     assert.equal(normalizeSqlConfig(undefined), undefined);
   });
+  it('persists the sqlite read-only flag only as a boolean', () => {
+    assert.equal(normalizeSqlConfig({ filePath: '/tmp/a.db', readOnly: true })?.readOnly, true);
+    assert.equal(normalizeSqlConfig({ readOnly: false })?.readOnly, false);
+    assert.equal(normalizeSqlConfig({ readOnly: 'yes' })?.readOnly, undefined);
+    assert.equal(normalizeSqlConfig({})?.readOnly, undefined);
+  });
+  it('keeps the sqlite file path trimmed', () => {
+    assert.equal(normalizeSqlConfig({ filePath: ' /tmp/a.db ' })?.filePath, '/tmp/a.db');
+    assert.equal(normalizeSqlConfig({ filePath: '   ' })?.filePath, undefined);
+  });
 });
 
 describe('resolveDbSessionTabStatus', () => {

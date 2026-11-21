@@ -25,6 +25,8 @@ export interface SqlConnectionConfig extends DbConnectionBase {
   database?: string;
   /** SQLite 数据库文件路径(sqlite 引擎专用)。 */
   filePath?: string;
+  /** SQLite 专用:只读方式打开数据库文件(sqliteBridge connect 读取)。 */
+  readOnly?: boolean;
 }
 
 export const DB_DEFAULT_PORTS: Record<DbProtocol, number | null> = {
@@ -102,6 +104,9 @@ export function normalizeSqlConfig(raw: unknown): SqlConnectionConfig | undefine
   const out: SqlConnectionConfig = { ...sanitizeBase(rec) };
   if (typeof rec.database === 'string' && rec.database.trim()) out.database = rec.database.trim();
   if (typeof rec.filePath === 'string' && rec.filePath.trim()) out.filePath = rec.filePath.trim();
+  // SQLite read-only open (DbConnectOptions.config.readOnly). Persisted only
+  // for boolean inputs so hostPort engines serialize exactly as before.
+  if (typeof rec.readOnly === 'boolean') out.readOnly = rec.readOnly;
   return out;
 }
 

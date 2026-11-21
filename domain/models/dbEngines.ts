@@ -1,5 +1,3 @@
-import type { DbProtocol } from './database';
-
 export type SqlEngineId = 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite';
 
 export type SqlEngineCap = 'Mysql' | 'Pg' | 'Mariadb' | 'Mssql' | 'Sqlite';
@@ -43,7 +41,9 @@ export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
     features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['BTREE', 'HASH'] },
     columnTypes: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'] },
   { id: 'mssql',      label: 'SQL Server', defaultPort: 1433,  cap: 'Mssql',   addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'tsql',
-    features: { tls: true, tunnel: true, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'] },
+    // tunnel: false (Ruling 8) — tedious dials TCP directly; there is no socket
+    // to inject through an SSH tunnel, and the mssql bridge ignores opts.ssh.
+    features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'] },
     columnTypes: ['int', 'bigint', 'decimal(10,2)', 'nvarchar(255)', 'nvarchar(max)', 'char(36)', 'date', 'datetime2', 'smalldatetime', 'bit', 'float', 'real', 'uniqueidentifier', 'varbinary(max)', 'xml'] },
   { id: 'sqlite',     label: 'SQLite',     defaultPort: null,  cap: 'Sqlite',  addressMode: 'file',     schemaQualified: false, completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'none',
     features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [] },

@@ -264,10 +264,10 @@ function createDatabaseService(deps = {}) {
     const timeoutMs = clampTimeout(params?.timeoutMs);
     const gate = validateReadOnlySql(dialect, sql);
     if (!gate.ok) return { ok: false, code: gate.code, error: gate.error };
-    const txn = readOnlyTransaction(dialect);
     const startedAt = Date.now();
     try {
       if (dialect === "mysql" || dialect === "mariadb") {
+        const txn = readOnlyTransaction(dialect);
         const conn = entry.client.conn;
         const exec = (s) => new Promise((resolve, reject) => conn.query(s, (err, result) => (err ? reject(err) : resolve(result))));
         await exec(txn.begin);
@@ -315,6 +315,7 @@ function createDatabaseService(deps = {}) {
         // Same gate-primary model as mssql: BEGIN + ROLLBACK backstop around
         // the (gate-split) statements. runAll is single-statement, so each
         // gate statement runs on its own call.
+        const txn = readOnlyTransaction(dialect);
         const db = entry.client.db;
         await db.exec(txn.begin);
         try {
@@ -336,6 +337,7 @@ function createDatabaseService(deps = {}) {
         }
       }
       const client = entry.client.client;
+      const txn = readOnlyTransaction(dialect);
       await client.query(txn.begin);
       try {
         if (gate.statements.length === 1) {

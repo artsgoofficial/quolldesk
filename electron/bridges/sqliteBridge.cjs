@@ -187,11 +187,20 @@ async function runSqliteBackup({ event, db, filePath, connectionId, jobId, scope
         let rowsDone = 0;
         for (;;) {
           if (!senderAlive()) throw new Error("renderer gone — backup aborted");
-          const pageRows = keyset
+          // All three paging shapes feed their row values into sqliteLiteral
+          // below, so they read with BigInts enabled (same guard as runOne):
+          // an INTEGER column beyond double precision (nanosecond timestamps,
+          // 64-bit ids) must not throw mid-backup. BigInt rowid → Number()
+          // keeps the keyset cursor working on normal-range rowids.
+          const pageStmt = keyset
             ? (lastRowid == null
-              ? db.prepare(`SELECT *, rowid AS __qd_rowid__ FROM ${q(entry.name)} ORDER BY rowid LIMIT ?`).all(DUMP_PAGE_SIZE)
-              : db.prepare(`SELECT *, rowid AS __qd_rowid__ FROM ${q(entry.name)} WHERE rowid > ? ORDER BY rowid LIMIT ?`).all(lastRowid, DUMP_PAGE_SIZE))
-            : db.prepare(`SELECT * FROM ${q(entry.name)} LIMIT ? OFFSET ?`).all(DUMP_PAGE_SIZE, rowsDone);
+              ? db.prepare(`SELECT *, rowid AS __qd_rowid__ FROM ${q(entry.name)} ORDER BY rowid LIMIT ?`)
+              : db.prepare(`SELECT *, rowid AS __qd_rowid__ FROM ${q(entry.name)} WHERE rowid > ? ORDER BY rowid LIMIT ?`))
+            : db.prepare(`SELECT * FROM ${q(entry.name)} LIMIT ? OFFSET ?`);
+          if (typeof pageStmt.setReadBigInts === "function") pageStmt.setReadBigInts(true);
+          const pageRows = keyset
+            ? (lastRowid == null ? pageStmt.all(DUMP_PAGE_SIZE) : pageStmt.all(lastRowid, DUMP_PAGE_SIZE))
+            : pageStmt.all(DUMP_PAGE_SIZE, rowsDone);
           if (pageRows.length > 0) {
             // value arrays in table_info column order (raw driver values —
             // sqliteLiteral renders numbers/strings, BLOBs as X'<hex>';

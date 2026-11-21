@@ -432,7 +432,7 @@ test("backup: BLOB columns dump as X'' literals (never ::bytea) and restore byte
 test("INTEGER beyond double precision reads back as a string, no driver throw", async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "nc-sqlite-bridge-bigint-"));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  const { call } = setup(70);
+  const { pushes, call } = setup(70);
 
   const dbFile = path.join(dir, "bigint.db");
   const conn = await call("quolldesk:sqlite:connect", { hostname: dbFile });
@@ -459,5 +459,28 @@ test("INTEGER beyond double precision reads back as a string, no driver throw", 
   assert.equal(qry.ok, true, JSON.stringify(qry));
   assert.equal(qry.data.resultSets[0].rows[0][0], "9007199254740993");
 
+  // Backup must not throw mid-dump either (the paging queries feed the dump
+  // literal path): the dump carries the exact digits and restore roundtrips
+  // the value into a fresh database.
+  const outFile = path.join(dir, "bigint-dump.sql");
+  const job = await call("quolldesk:sqlite:backup", { connectionId, scope: "table", table: "nums", includeData: true, outFile });
+  assert.equal(job.ok, true, JSON.stringify(job));
+  await waitForPush(pushes, "done");
+  const dump = fs.readFileSync(outFile, "utf8");
+  assert.ok(dump.includes("9007199254740993"), `dump must carry the bigint's exact digits:\n${dump}`);
+
+  const dstFile = path.join(dir, "restored-bigint.db");
+  const conn2 = await call("quolldesk:sqlite:connect", { hostname: dstFile });
+  assert.equal(conn2.ok, true, JSON.stringify(conn2));
+  const connectionId2 = conn2.data.connectionId;
+  pushes.length = 0;
+  const restore = await call("quolldesk:sqlite:restore", { connectionId: connectionId2, inFile: outFile });
+  assert.equal(restore.ok, true, JSON.stringify(restore));
+  await waitForPush(pushes, "done");
+  const restored = await call("quolldesk:sqlite:tableRows", { connectionId: connectionId2, table: "nums" });
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  assert.deepEqual(restored.data.rows, [["1", "9007199254740993"]], "bigint must roundtrip through backup/restore");
+
   await call("quolldesk:sqlite:disconnect", { connectionId });
+  await call("quolldesk:sqlite:disconnect", { connectionId2 });
 });

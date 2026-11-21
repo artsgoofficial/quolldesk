@@ -131,6 +131,10 @@ test('form is registry-driven per engine descriptor', () => {
   // Port default comes from the descriptor, not the mysql/pg branch.
   assert.match(source, /engine\.defaultPort/);
   assert.doesNotMatch(source, /DB_DEFAULT_PORTS\[/);
+  // Placeholders come from the descriptor, not a dialect ternary.
+  assert.match(source, /placeholder=\{engine\.placeholderUsername\}/);
+  assert.match(source, /placeholder=\{engine\.placeholderDatabase\}/);
+  assert.doesNotMatch(source, /'postgresql' \? 'postgres' : 'mysql'/);
 });
 
 test('sqlite form renders a database-file picker instead of host/port fields', () => {

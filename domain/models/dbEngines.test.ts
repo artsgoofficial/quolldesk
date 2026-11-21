@@ -40,6 +40,18 @@ test('registry: mssql advertises no tunnel (tedious cannot inject sockets — Ru
   assert.equal(SQL_ENGINE_BY_ID.mssql.features.tls, true);
 });
 
+test('registry: per-engine form placeholders (mssql sa/master)', () => {
+  assert.equal(SQL_ENGINE_BY_ID.mssql.placeholderUsername, 'sa');
+  assert.equal(SQL_ENGINE_BY_ID.mssql.placeholderDatabase, 'master');
+  // Every hostPort engine shows meaningful hints; sqlite hides both rows.
+  for (const id of ['mysql', 'postgresql', 'mariadb'] as const) {
+    assert.ok(SQL_ENGINE_BY_ID[id].placeholderUsername.length > 0, `${id} username hint`);
+    assert.ok(SQL_ENGINE_BY_ID[id].placeholderDatabase.length > 0, `${id} database hint`);
+  }
+  assert.equal(SQL_ENGINE_BY_ID.sqlite.placeholderUsername, '');
+  assert.equal(SQL_ENGINE_BY_ID.sqlite.placeholderDatabase, '');
+});
+
 test('registry: isSqlEngineId rejects inherited Object.prototype keys', () => {
   // SQL_ENGINE_BY_ID is built with Object.fromEntries (plain prototype);
   // `in` would let 'constructor'/'toString'/'__proto__' pass the guard.

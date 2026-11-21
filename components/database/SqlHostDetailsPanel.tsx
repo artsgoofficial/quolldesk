@@ -205,7 +205,7 @@ export const SqlHostDetailsPanel: React.FC<SqlHostDetailsPanelProps> = ({
             </div>
             <div className="space-y-1">
               <Label htmlFor="sql-username">{t('db.form.username')}</Label>
-              <Input id="sql-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="root" />
+              <Input id="sql-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={engine.placeholderUsername} />
             </div>
           </>
         )}
@@ -222,7 +222,7 @@ export const SqlHostDetailsPanel: React.FC<SqlHostDetailsPanelProps> = ({
         {!isFile && (
           <div className="space-y-1">
             <Label htmlFor="sql-database">{t('db.form.database')}</Label>
-            <Input id="sql-database" value={database} onChange={(e) => setDatabase(e.target.value)} placeholder={engine.id === 'postgresql' ? 'postgres' : 'mysql'} />
+            <Input id="sql-database" value={database} onChange={(e) => setDatabase(e.target.value)} placeholder={engine.placeholderDatabase} />
           </div>
         )}
         {engine.id === 'mssql' && (

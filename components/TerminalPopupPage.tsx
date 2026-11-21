@@ -24,7 +24,7 @@ import { cn } from '../lib/utils';
 import type { AppLockGateRenderContext } from './AppLockGate';
 import { PluginAuthenticationHost } from './plugins/PluginAuthenticationHost';
 
-const Terminal = lazy(() => import('./Terminal'));
+const Terminal = lazy(() => import('./terminal'));
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 const POPUP_STARTUP_REVEAL_EXTRA_DELAY_MS = 900;

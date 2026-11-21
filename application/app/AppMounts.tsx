@@ -7,7 +7,7 @@ import { ConnectionLog, TerminalTheme } from '../../types';
 import { LazyLoadBoundary } from '../../components/ui/lazy-load-boundary';
 import type { LogView as LogViewType } from '../state/logViewState';
 import type { SftpView as SftpViewComponent } from '../../components/SftpView';
-import type { TerminalLayer as TerminalLayerComponent } from '../../components/TerminalLayer';
+import type { TerminalLayer as TerminalLayerComponent } from '../../components/terminalLayer';
 
 // Visibility container for VaultView - isolates isActive subscription
 export const VaultViewContainer: React.FC<{
@@ -113,7 +113,7 @@ const LazySftpView = lazy(() =>
 );
 
 const LazyTerminalLayer = lazy(() =>
-  import('../../components/TerminalLayer').then((m) => ({ default: m.TerminalLayer })),
+  import('../../components/terminalLayer').then((m) => ({ default: m.TerminalLayer })),
 );
 
 type SftpViewProps = React.ComponentProps<typeof SftpViewComponent>;

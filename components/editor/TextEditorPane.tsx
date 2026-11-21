@@ -28,7 +28,7 @@ import { HotkeyScheme, KeyBinding, matchesKeyBinding } from '../../domain/models
 import { pasteForMonacoEditorCommand } from '../../infrastructure/monaco/monacoClipboardPaste';
 import { registerNginxLanguage } from '../../infrastructure/monaco/nginxLanguage';
 import { configureMonacoLoader } from '../../infrastructure/monaco/monacoLoader';
-import { useQuollDeskMonacoTheme } from '../../infrastructure/monaco/useQuollDeskMonacoTheme';
+import { useQuollDeskMonacoTheme } from '../../infrastructure/monaco/usequolldeskMonacoTheme';
 import { getLanguageName, getSupportedLanguages } from '../../lib/sftpFileUtils';
 import { Button } from '../ui/button';
 import { Combobox } from '../ui/combobox';

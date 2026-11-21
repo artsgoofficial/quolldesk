@@ -239,6 +239,47 @@ async function runLimitedQuery(pool, sql, maxRows = 200) {
 }
 
 /**
+ * databaseService (AI/MCP) database.query/execute consume this: run one batch
+ * on the pool and return mysql-family shaped segments —
+ * `{ columns, rows, okPacket, truncated }[]` — so the service maps mssql
+ * exactly like the mysql path. Rows are cellified OBJECT rows
+ * (serializeCellValue per cell: tedious Dates/Buffers → JSON-safe); the
+ * flattened rowsAffected aggregate attaches to the last column-less result
+ * set (or a synthetic trailing set for a pure-DML batch), same semantics as
+ * the quolldesk:mssql:query channel.
+ */
+async function runQuery(pool, sql, timeoutMs) {
+  // v12 exposes no request.timeout property — per-request timeout is a
+  // Request override: pool.request({ requestTimeout }).
+  const req = pool.request({
+    requestTimeout: Math.min(Math.max(1, Number(timeoutMs) || DEFAULT_QUERY_TIMEOUT_MS), MAX_QUERY_TIMEOUT_MS),
+  });
+  const res = await req.query(String(sql));
+  const recordsets = Array.isArray(res.recordsets) ? res.recordsets : [];
+  const affectedTotal = (res.rowsAffected || []).reduce((sum, n) => sum + (Number(n) || 0), 0);
+  const segments = recordsets.map((recordset) => {
+    const rows = Array.isArray(recordset) ? recordset : [];
+    const columns = (rows[0] ? Object.keys(rows[0]) : []).map((name) => ({ name }));
+    return {
+      columns,
+      rows: rows.slice(0, MAX_ROWS).map((row) =>
+        Object.fromEntries(columns.map((c) => [c.name, serializeCellValue(row?.[c.name])]))),
+      okPacket: null,
+      truncated: rows.length > MAX_ROWS,
+    };
+  });
+  let target = null;
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (!segments[i].columns.length) { target = segments[i]; break; }
+  }
+  if (target) target.okPacket = { affectedRows: affectedTotal };
+  else if (recordsets.length === 0) {
+    segments.push({ columns: [], rows: [], okPacket: { affectedRows: affectedTotal }, truncated: false });
+  }
+  return segments;
+}
+
+/**
  * Stream one connection's tables/views into a plain SQL dump file.
  * Never throws to the caller: every failure path pushes phase:'error' on
  * quolldesk:db:jobProgress and deletes the partial file. Pushes stop (and the
@@ -667,5 +708,5 @@ function registerHandlers(ipcMain, options = {}) {
 function closeAllForSender(senderId) { return registry.closeAllForSender(senderId); }
 
 module.exports = {
-  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery,
+  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery, runQuery,
 };

@@ -122,7 +122,7 @@ function validateReadOnlySql(dialect, sql) {
         ok: false,
         code: "READ_ONLY_VIOLATION",
         error: `Statement "${truncateSnippet(stmt)}" is not read-only (keyword: ${kw || "unknown"}). ` +
-          "Only SELECT / SHOW / EXPLAIN / DESC / WITH queries are allowed; use database_execute for writes.",
+          "Only read-only statements (SELECT/WITH and the engine's allowed keywords) are permitted; use database_execute for writes.",
       };
     }
   }

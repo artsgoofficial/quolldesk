@@ -5,7 +5,7 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
-import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/useQuollDeskMonacoTheme';
+import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/usequolldeskMonacoTheme';
 import { configureMonacoLoader } from '@/infrastructure/monaco/monacoLoader';
 import {
   attachSqlValidation,

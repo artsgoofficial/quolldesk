@@ -14,8 +14,8 @@ test('schema tree wires radix context menus around every node kind', () => {
 });
 
 test('database rows select on click and highlight the selected db', () => {
-  assert.match(source, /onSelectDatabase\?\:\s*\(name: string\) => void/);
-  assert.match(source, /onSelectDatabase\?\.\(db\.name\)/);
+  assert.match(source, /onSelectDatabase\?[:]\s*[(]name: string[)] => void/);
+  assert.match(source, /onSelectDatabase[?][.][(]db[.]name[)]/);
   assert.match(source, /selectedDatabase === db\.name/);
 });
 

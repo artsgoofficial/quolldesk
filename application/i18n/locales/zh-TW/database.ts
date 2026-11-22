@@ -23,6 +23,7 @@ export const zhTwDatabaseMessages: Messages = {
   'db.action.reconnect': '重新連線',
   'db.action.loadMore': '載入更多',
   'db.form.label': '名稱',
+  'db.form.type': '類型',
   'db.form.host': '主機',
   'db.form.port': '連接埠',
   'db.form.username': '使用者名稱',

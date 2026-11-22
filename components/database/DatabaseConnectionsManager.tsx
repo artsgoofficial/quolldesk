@@ -19,7 +19,6 @@ const DatabaseConnectionsManager: React.FC<DbConnectionsManagerOwnProps> = (prop
   <DbConnectionsManager
     {...props}
     section="databases"
-    pickDialect
     metaLine={(host) => `${host.sqlConfig?.database ? ` / ${host.sqlConfig.database}` : ''}${host.sqlConfig?.tunnelHostId ? ' · tunnel' : ''}`}
     detailsPanel={({ editing, dialect, sshHosts, onSave, onCancel }) => (
       <SqlHostDetailsPanel initialData={editing} dialect={dialect} sshHosts={sshHosts} onSave={onSave} onCancel={onCancel} />

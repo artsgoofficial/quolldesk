@@ -23,6 +23,7 @@ export const enDatabaseMessages: Messages = {
   'db.action.reconnect': 'Reconnect',
   'db.action.loadMore': 'Load more',
   'db.form.label': 'Label',
+  'db.form.type': 'Type',
   'db.form.host': 'Host',
   'db.form.port': 'Port',
   'db.form.username': 'Username',

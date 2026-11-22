@@ -23,6 +23,7 @@ export const zhCnDatabaseMessages: Messages = {
   'db.action.reconnect': '重新连接',
   'db.action.loadMore': '加载更多',
   'db.form.label': '名称',
+  'db.form.type': '类型',
   'db.form.host': '主机',
   'db.form.port': '端口',
   'db.form.username': '用户名',

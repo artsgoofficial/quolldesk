@@ -53,8 +53,6 @@ interface DbConnectionsManagerProps {
   section: 'redis' | 'databases';
   /** Row meta line after the address line (cluster / database / tunnel markers). */
   metaLine: (host: Host) => string;
-  /** "New" first picks a SQL engine (databases); otherwise creates directly. */
-  pickDialect?: boolean;
   /** Section details panel (create/edit form), rendered with the active engine id. */
   detailsPanel: (opts: {
     editing: Host | null;
@@ -82,7 +80,7 @@ const secondaryActions =
 const cardGrid = 'grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-3';
 
 const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsManagerOwnProps> = ({
-  section, metaLine, pickDialect, detailsPanel,
+  section, metaLine, detailsPanel,
   hosts, onUpdateHosts, onConnect,
 }) => {
   const { t } = useI18n();
@@ -91,7 +89,6 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
   const groups = useMemo(() => groupSectionHosts(section, sectionHosts), [section, sectionHosts]);
   const [editing, setEditing] = useState<Host | null>(null);
   const [creating, setCreating] = useState(false);
-  const [pendingDialect, setPendingDialect] = useState<SqlEngineId | null>(null);
   const [newDialect, setNewDialect] = useState<SqlEngineId>('mysql');
   const [deleteTarget, setDeleteTarget] = useState<Host | null>(null);
 
@@ -101,20 +98,16 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
     setCreating(false);
   };
 
+  // "New" opens the details panel directly — the engine type is switched
+  // inside the form (SqlHostDetailsPanel engine row), no pre-picker popup.
   const openNew = () => {
-    if (pickDialect) {
-      setPendingDialect('mysql');
-      setEditing(null);
-    } else {
-      setCreating(true);
-      setEditing(null);
-    }
+    setCreating(true);
+    setEditing(null);
   };
 
   const openEdit = (host: Host) => {
     setEditing(host);
     setCreating(false);
-    setPendingDialect(null);
   };
 
   const hostCard = (host: Host) => (
@@ -182,16 +175,6 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
           <Plus size={14} className="mr-1" />{t('db.action.new')}
         </Button>
       </div>
-      {pendingDialect && !editing && (
-        <div className="absolute right-4 top-12 z-30 rounded-md border border-border/60 bg-background p-2 flex gap-2 shadow">
-          {SQL_ENGINES.map((engine) => (
-            <Button key={engine.id} size="sm" variant="outline"
-              onClick={() => { setCreating(true); setPendingDialect(null); setNewDialect(engine.id); }}>
-              {engine.label}
-            </Button>
-          ))}
-        </div>
-      )}
       {sectionHosts.length === 0 ? (
         <div className="p-8 text-center text-sm text-muted-foreground">{t(`db.section.${section}.empty`)}</div>
       ) : (

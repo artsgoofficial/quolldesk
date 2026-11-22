@@ -11,7 +11,7 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
 import { isValidPort, normalizeSqlConfig } from '../../domain/models/database';
 import {
-  SQL_ENGINE_BY_ID, isSqlEngineId,
+  SQL_ENGINE_BY_ID, SQL_ENGINES, isSqlEngineId,
   type SqlEngineDescriptor, type SqlEngineId,
 } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
@@ -102,7 +102,11 @@ export const SqlHostDetailsPanel: React.FC<SqlHostDetailsPanelProps> = ({
   initialData, dialect, sshHosts, onSave, onCancel,
 }) => {
   const { t } = useI18n();
-  const engine = SQL_ENGINE_BY_ID[resolveSqlEngineForEdit(initialData, dialect)];
+  // Create mode: the engine type is switchable inside the form (engine row
+  // below); edit mode: locked to the saved protocol (resolveSqlEngineForEdit).
+  const isEdit = !!initialData;
+  const [engineId, setEngineId] = useState<SqlEngineId>(() => resolveSqlEngineForEdit(initialData, dialect));
+  const engine = SQL_ENGINE_BY_ID[engineId];
   const isFile = engine.addressMode === 'file';
   const cfg = initialData?.sqlConfig ?? {};
   const [label, setLabel] = useState(initialData?.label ?? '');
@@ -124,6 +128,17 @@ export const SqlHostDetailsPanel: React.FC<SqlHostDetailsPanelProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Engine switch (create mode): the port follows the new engine's default so
+  // the form never dials a stale port; everything else the user typed stays.
+  const switchEngine = (next: SqlEngineId) => {
+    if (next === engineId) return;
+    setEngineId(next);
+    const nextEngine = SQL_ENGINE_BY_ID[next];
+    setPort(String(nextEngine.defaultPort ?? ''));
+    if (nextEngine.addressMode === 'file') setFilePath((prev) => prev || hostname);
+    setTestResult(null);
+  };
 
   const portNumber = useMemo(() => Number(port), [port]);
   const hostInvalid = isFile ? !filePath.trim() : !hostname.trim();
@@ -174,6 +189,43 @@ export const SqlHostDetailsPanel: React.FC<SqlHostDetailsPanelProps> = ({
       title={initialData ? t('db.action.edit') : t('db.action.new')}
     >
       <AsidePanelContent>
+        {/* Engine type row: switchable on create, locked (badge) on edit. */}
+        {isEdit ? (
+          <div className="flex items-center gap-2">
+            <span
+              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: engine.accent }}
+              aria-hidden
+            />
+            <span className="text-sm font-medium">{engine.label}</span>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <Label>{t('db.form.type')}</Label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {SQL_ENGINES.map((e) => {
+                const active = e.id === engineId;
+                return (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => switchEngine(e.id)}
+                    aria-pressed={active}
+                    className={`flex flex-col items-center gap-1.5 rounded-lg border px-1.5 py-2 text-[11px] leading-tight transition-colors ${
+                      active
+                        ? 'border-transparent bg-foreground/5 font-medium'
+                        : 'border-border/60 text-muted-foreground hover:bg-foreground/5'
+                    }`}
+                    style={active ? { borderColor: e.accent, color: e.accent } : undefined}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: e.accent }} aria-hidden />
+                    {e.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div className="space-y-1">
           <Label htmlFor="sql-label">{t('db.form.label')}</Label>
           <Input id="sql-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="db-1" />

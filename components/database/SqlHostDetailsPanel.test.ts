@@ -160,3 +160,18 @@ test('feature rows render only when the descriptor enables them', () => {
   // Ruling 8 UI side: the tunnel selector is feature-gated, not hardcoded.
   assert.match(source, /db\.form\.mssqlAuthHint/);
 });
+
+test('create mode: switchable engine row from the registry; edit mode: locked badge', () => {
+  const source = readFileSync(new URL('./SqlHostDetailsPanel.tsx', import.meta.url), 'utf8');
+  // Switchable on create: registry-driven engine buttons with accent dots.
+  assert.match(source, /isEdit \? \(/);
+  assert.match(source, /SQL_ENGINES\.map\(\(e\) =>/);
+  assert.match(source, /switchEngine\(e\.id\)/);
+  assert.match(source, /aria-pressed=\{active\}/);
+  assert.match(source, /backgroundColor: e\.accent/);
+  // Edit mode: locked to the saved protocol (accent dot + label, no buttons).
+  assert.match(source, /backgroundColor: engine\.accent/);
+  // Switch resets the port to the new engine default and clears stale test result.
+  assert.match(source, /setPort\(String\(nextEngine\.defaultPort/);
+  assert.match(source, /setTestResult\(null\)/);
+});

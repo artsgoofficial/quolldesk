@@ -7,6 +7,7 @@ import type { Messages } from '../types';
  * the rest of the db.* namespace falls back to en until translated.
  */
 export const ruDatabaseMessages: Messages = {
+  'db.form.type': 'Тип',
   'db.form.databaseFile': 'Файл базы данных',
   'db.form.browse': 'Обзор...',
   'db.form.fileNewHint': 'Если файл не существует, он будет создан',

@@ -30,19 +30,17 @@ test('row address: hostPort sql engines and redis keep the hostname:port line', 
   assert.equal(dbRowAddressLine({ hostname: '127.0.0.1', port: 6379, protocol: 'redis' }), '127.0.0.1:6379');
 });
 
-test('picker buttons come from the registry, not hardcoded label pairs', () => {
+test('new opens the form directly: no pre-picker popup in the manager', () => {
   const source = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
-  assert.match(source, /SQL_ENGINES\.map/);
-  assert.match(source, /engine\.label/);
-  assert.doesNotMatch(source, />MySQL<\/Button>/);
-  assert.doesNotMatch(source, />PostgreSQL<\/Button>/);
+  assert.doesNotMatch(source, /pendingDialect/);
+  assert.doesNotMatch(source, /pickDialect/);
+  // Engine choice lives inside SqlHostDetailsPanel now.
+  assert.match(source, /useState<SqlEngineId>\('mysql'\)/);
 });
 
 test('dialect state is widened to SqlEngineId', () => {
   const source = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
   assert.match(source, /import \{[^}]*SQL_ENGINES[^}]*isSqlEngineId[^}]*type SqlEngineId[^}]*\} from '\.\.\/\.\.\/domain\/models\/dbEngines'/);
-  assert.match(source, /useState<SqlEngineId \| null>\(null\)/);
-  assert.match(source, /useState<SqlEngineId>\('mysql'\)/);
 });
 
 test('edit routing resolves the details-panel dialect from the edited host', () => {

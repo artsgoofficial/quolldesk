@@ -3,16 +3,18 @@
  * Databases): host list with create/edit/duplicate/delete/connect, the
  * create/edit details panel and the delete confirmation. Section-specific
  * behavior arrives via props — which details panel opens, the row meta
- * line/badge, and whether "New" first picks a SQL dialect.
+ * line, and whether "New" first picks a SQL engine.
+ *
+ * Databases section renders engine-grouped (registry order, brand accent
+ * per group); Redis stays a single flat list with the same row treatment.
  */
-import { Database, Pencil, Plus, Trash2, Copy, Play } from 'lucide-react';
+import { Pencil, Plus, Trash2, Copy, Play } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
 import { upsertHostById } from '../../domain/host';
 import { hostsForDbSection, sshTunnelCandidates } from '../../domain/models/database';
-import { SQL_ENGINE_BY_ID, SQL_ENGINES, isSqlEngineId, type SqlEngineId } from '../../domain/models/dbEngines';
-import { Badge } from '../ui/badge';
+import { SQL_ENGINES, SQL_ENGINE_BY_ID, isSqlEngineId, type SqlEngineDescriptor, type SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { resolveSqlEngineForEdit } from './SqlHostDetailsPanel';
@@ -23,12 +25,34 @@ export const dbRowAddressLine = (host: Pick<Host, 'hostname' | 'port' | 'protoco
   return engine?.addressMode === 'file' ? host.hostname : `${host.hostname}:${host.port}`;
 };
 
+/** Redis flat-list accent (brand red) — redis hosts have no registry descriptor. */
+const REDIS_ACCENT = '#D44B4B';
+
+export interface DbHostGroup { engine: SqlEngineDescriptor; hosts: Host[] }
+
+/**
+ * Databases section groups by engine (registry order, empty groups dropped,
+ * label-sorted within a group); Redis renders flat → null.
+ */
+export const groupSectionHosts = (section: 'redis' | 'databases', hosts: Host[]): DbHostGroup[] | null => {
+  if (section === 'redis') return null;
+  return SQL_ENGINES
+    .map((engine) => ({ engine, hosts: hosts.filter((h) => h.protocol === engine.id) }))
+    .filter((group) => group.hosts.length > 0)
+    .map((group) => ({
+      engine: group.engine,
+      hosts: [...group.hosts].sort((a, b) =>
+        (a.label || a.hostname).localeCompare(b.label || b.hostname)),
+    }));
+};
+
+const rowAccent = (host: Host): string =>
+  isSqlEngineId(host.protocol) ? SQL_ENGINE_BY_ID[host.protocol].accent : REDIS_ACCENT;
+
 interface DbConnectionsManagerProps {
   section: 'redis' | 'databases';
   /** Row meta line after the address line (cluster / database / tunnel markers). */
   metaLine: (host: Host) => string;
-  /** Optional leading row badge (protocol label for SQL hosts). */
-  badgeLabel?: (host: Host) => string;
   /** "New" first picks a SQL engine (databases); otherwise creates directly. */
   pickDialect?: boolean;
   /** Section details panel (create/edit form), rendered with the active engine id. */
@@ -47,13 +71,21 @@ export interface DbConnectionsManagerOwnProps {
   onConnect: (host: Host) => void;
 }
 
+const rowClasses =
+  'group/row rounded-lg border border-border/50 px-3 py-2 flex items-center gap-2.5 '
+  + 'hover:bg-foreground/5 hover:border-border transition-colors';
+const secondaryActions =
+  'flex items-center gap-0.5 opacity-0 group-hover/row:opacity-100 '
+  + 'focus-within:opacity-100 transition-opacity';
+
 const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsManagerOwnProps> = ({
-  section, metaLine, badgeLabel, pickDialect, detailsPanel,
+  section, metaLine, pickDialect, detailsPanel,
   hosts, onUpdateHosts, onConnect,
 }) => {
   const { t } = useI18n();
   const sectionHosts = useMemo(() => hostsForDbSection(hosts, section), [hosts, section]);
   const sshHosts = useMemo(() => sshTunnelCandidates(hosts), [hosts]);
+  const groups = useMemo(() => groupSectionHosts(section, sectionHosts), [section, sectionHosts]);
   const [editing, setEditing] = useState<Host | null>(null);
   const [creating, setCreating] = useState(false);
   const [pendingDialect, setPendingDialect] = useState<SqlEngineId | null>(null);
@@ -82,6 +114,41 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
     setPendingDialect(null);
   };
 
+  const hostRow = (host: Host) => (
+    <div key={host.id} className={rowClasses}>
+      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: rowAccent(host) }} aria-hidden />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm truncate leading-tight">{host.label || host.hostname}</p>
+        <p className="text-xs text-muted-foreground truncate mt-0.5">
+          {dbRowAddressLine(host)}{metaLine(host)}
+        </p>
+      </div>
+      <Button variant="ghost" size="icon" className="flex-shrink-0" aria-label={t('db.action.connect')} onClick={() => onConnect(host)}>
+        <Play size={14} />
+      </Button>
+      <div className={secondaryActions}>
+        <Button variant="ghost" size="icon" aria-label={t('db.action.edit')} onClick={() => openEdit(host)}>
+          <Pencil size={14} />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label={t('db.action.duplicate')}
+          onClick={() => void onUpdateHosts((prev) => [...prev, { ...host, id: crypto.randomUUID(), label: `${host.label || host.hostname} copy` }])}>
+          <Copy size={14} />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label={t('db.action.delete')} onClick={() => setDeleteTarget(host)}>
+          <Trash2 size={14} />
+        </Button>
+      </div>
+    </div>
+  );
+
+  const groupedHeader = (engine: SqlEngineDescriptor, count: number) => (
+    <div className="flex items-center gap-2 pt-4 pb-1.5 first:pt-0.5">
+      <span className="w-1 h-3.5 rounded-full flex-shrink-0" style={{ backgroundColor: engine.accent }} aria-hidden />
+      <span className="text-xs font-medium text-foreground/80">{engine.label}</span>
+      <span className="text-[11px] text-muted-foreground">{count}</span>
+    </div>
+  );
+
   return (
     <div className="relative h-full">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
@@ -103,32 +170,15 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
       {sectionHosts.length === 0 ? (
         <div className="p-8 text-center text-sm text-muted-foreground">{t(`db.section.${section}.empty`)}</div>
       ) : (
-        <div className="p-3 space-y-2 overflow-auto" style={{ height: 'calc(100% - 49px)' }}>
-          {sectionHosts.map((host) => (
-            <div key={host.id} className="rounded-md border border-border/60 px-3 py-2 flex items-center gap-2 hover:bg-foreground/5">
-              <Database size={14} className="text-muted-foreground flex-shrink-0" />
-              {badgeLabel && <Badge variant="outline">{badgeLabel(host)}</Badge>}
-              <div className="min-w-0 flex-1">
-                <p className="text-sm truncate">{host.label || host.hostname}</p>
-                <p className="text-xs text-muted-foreground truncate">
-                  {dbRowAddressLine(host)}{metaLine(host)}
-                </p>
-              </div>
-              <Button variant="ghost" size="icon" aria-label={t('db.action.connect')} onClick={() => onConnect(host)}>
-                <Play size={14} />
-              </Button>
-              <Button variant="ghost" size="icon" aria-label={t('db.action.edit')} onClick={() => openEdit(host)}>
-                <Pencil size={14} />
-              </Button>
-              <Button variant="ghost" size="icon" aria-label={t('db.action.duplicate')}
-                onClick={() => void onUpdateHosts((prev) => [...prev, { ...host, id: crypto.randomUUID(), label: `${host.label || host.hostname} copy` }])}>
-                <Copy size={14} />
-              </Button>
-              <Button variant="ghost" size="icon" aria-label={t('db.action.delete')} onClick={() => setDeleteTarget(host)}>
-                <Trash2 size={14} />
-              </Button>
-            </div>
-          ))}
+        <div className="px-3 pb-3 overflow-auto" style={{ height: 'calc(100% - 49px)' }}>
+          {groups
+            ? groups.map((group) => (
+              <section key={group.engine.id} aria-label={group.engine.label}>
+                {groupedHeader(group.engine, group.hosts.length)}
+                <div className="space-y-1">{group.hosts.map(hostRow)}</div>
+              </section>
+            ))
+            : <div className="pt-2 space-y-2">{sectionHosts.map(hostRow)}</div>}
         </div>
       )}
       {(creating || editing) && detailsPanel({

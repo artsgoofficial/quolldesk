@@ -22,6 +22,8 @@ export interface SqlEngineDescriptor {
   /** 连接表单占位提示:hostPort 引擎的示例用户名/示例数据库(sqlite 两行均隐藏,留空)。 */
   placeholderUsername: string;
   placeholderDatabase: string;
+  /** 连接列表分组头/行圆点的品牌识别色(hex)。 */
+  accent: string;
   features: {
     tls: boolean;
     tunnel: boolean;
@@ -36,24 +38,29 @@ export interface SqlEngineDescriptor {
 export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
   { id: 'mysql',      label: 'MySQL',      defaultPort: 3306,  cap: 'Mysql',   addressMode: 'hostPort', schemaQualified: false, completionDialect: 'mysql',      monacoLanguage: 'sql',   indexMethodStyle: 'mysql',
     placeholderUsername: 'root',       placeholderDatabase: 'mysql',
+    accent: '#1E7BA8',
     features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['BTREE', 'HASH'] },
     columnTypes: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'] },
   { id: 'postgresql', label: 'PostgreSQL', defaultPort: 5432,  cap: 'Pg',      addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'postgresql', monacoLanguage: 'pgsql', indexMethodStyle: 'pg',
     placeholderUsername: 'postgres',   placeholderDatabase: 'postgres',
+    accent: '#336791',
     features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'] },
     columnTypes: ['smallint', 'integer', 'bigint', 'numeric(10,2)', 'varchar(255)', 'text', 'date', 'timestamp', 'timestamptz', 'boolean', 'jsonb', 'uuid'] },
   { id: 'mariadb',    label: 'MariaDB',    defaultPort: 3306,  cap: 'Mariadb', addressMode: 'hostPort', schemaQualified: false, completionDialect: 'mysql',      monacoLanguage: 'sql',   indexMethodStyle: 'mysql',
     placeholderUsername: 'root',       placeholderDatabase: 'mysql',
+    accent: '#A2593C',
     features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['BTREE', 'HASH'] },
     columnTypes: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'] },
   { id: 'mssql',      label: 'SQL Server', defaultPort: 1433,  cap: 'Mssql',   addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'tsql',
     placeholderUsername: 'sa',         placeholderDatabase: 'master',
+    accent: '#A93038',
     // tunnel: false (Ruling 8) — tedious dials TCP directly; there is no socket
     // to inject through an SSH tunnel, and the mssql bridge ignores opts.ssh.
     features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'] },
     columnTypes: ['int', 'bigint', 'decimal(10,2)', 'nvarchar(255)', 'nvarchar(max)', 'char(36)', 'date', 'datetime2', 'smalldatetime', 'bit', 'float', 'real', 'uniqueidentifier', 'varbinary(max)', 'xml'] },
   { id: 'sqlite',     label: 'SQLite',     defaultPort: null,  cap: 'Sqlite',  addressMode: 'file',     schemaQualified: false, completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'none',
     placeholderUsername: '',           placeholderDatabase: '',
+    accent: '#0F7B6C',
     features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [] },
     columnTypes: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC', 'BOOLEAN', 'DATE', 'DATETIME', 'JSON', 'VARCHAR(255)', 'BIGINT', 'DOUBLE'] },
 ];

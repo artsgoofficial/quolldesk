@@ -18,9 +18,12 @@ test('badge label falls back to SQL for non-sql protocols', () => {
   assert.equal(sqlBadgeLabel(undefined), 'SQL');
 });
 
-test('the SQL section wires the registry badge and passes the dialect through', () => {
+test('the SQL section groups by engine (no per-row badge) and passes the dialect through', () => {
   const source = readFileSync(new URL('./DatabaseConnectionsManager.tsx', import.meta.url), 'utf8');
-  assert.match(source, /badgeLabel=\{\(host\) => sqlBadgeLabel\(host\.protocol\)\}/);
+  // Engine identity moved to the group header (DbConnectionsManager grouping);
+  // the per-row badge prop is retired.
+  assert.doesNotMatch(source, /badgeLabel=/);
   assert.doesNotMatch(source, /host\.protocol === 'postgresql' \? 'PostgreSQL' : 'MySQL'/);
+  assert.match(source, /section="databases"/);
   assert.match(source, /dialect=\{dialect\}/);
 });

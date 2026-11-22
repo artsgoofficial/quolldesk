@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { SQL_ENGINES } from '../../domain/models/dbEngines';
-import { dbRowAddressLine } from './DbConnectionsManager';
+import { dbRowAddressLine, groupSectionHosts, type DbHostGroup } from './DbConnectionsManager';
+import type { Host } from '../../domain/models/connection';
+
+const makeHost = (id: string, protocol: Host['protocol'], label?: string): Host =>
+  ({ id, protocol, label, hostname: `${id}.host`, port: 3306, tags: [] } as unknown as Host);
 
 test('picker offers the five registry engines with their labels', () => {
   assert.deepEqual(
@@ -51,4 +55,32 @@ test('row rendering uses the address helper before the meta line', () => {
   const source = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
   assert.match(source, /\{dbRowAddressLine\(host\)\}\{metaLine\(host\)\}/);
   assert.doesNotMatch(source, /\{host\.hostname\}:\{host\.port\}/);
+});
+
+test('databases section groups by engine in registry order, empty groups dropped', () => {
+  const hosts = [
+    makeHost('a', 'sqlite', 'zz-file'),
+    makeHost('b', 'mysql', 'b-mysql'),
+    makeHost('c', 'mssql', 'c-mssql'),
+    makeHost('d', 'mysql', 'a-mysql'),
+    makeHost('e', 'redis', 'not-in-this-section'),
+  ];
+  const groups: DbHostGroup[] | null = groupSectionHosts('databases', hosts);
+  assert.deepEqual(groups?.map((g) => g.engine.id), ['mysql', 'mssql', 'sqlite']);
+  assert.deepEqual(groups?.[0].hosts.map((h) => h.label), ['a-mysql', 'b-mysql']);
+});
+
+test('redis section renders flat (no grouping)', () => {
+  assert.equal(groupSectionHosts('redis', [makeHost('r', 'redis')]), null);
+});
+
+test('grouped rows: hover-revealed secondary actions + engine accent dot/header', () => {
+  const source = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
+  assert.match(source, /group\/row/);
+  assert.match(source, /group-hover\/row:opacity-100/);
+  assert.match(source, /focus-within:opacity-100/);
+  assert.match(source, /backgroundColor: engine\.accent/);
+  assert.match(source, /backgroundColor: rowAccent\(host\)/);
+  assert.match(source, /font-medium text-foreground\/80">\{engine\.label\}<\/span>/);
+  assert.doesNotMatch(source, /<Badge variant="outline">/);
 });

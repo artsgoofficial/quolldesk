@@ -62,3 +62,9 @@ test('registry: isSqlEngineId rejects inherited Object.prototype keys', () => {
   assert.equal(isSqlEngineId('mysql'), true);
   assert.equal(isSqlEngineId('sqlite'), true);
 });
+
+test('registry: every engine has a distinct hex accent for list grouping', () => {
+  const accents = SQL_ENGINES.map((e) => e.accent);
+  for (const accent of accents) assert.match(accent, /^#[0-9A-Fa-f]{6}$/);
+  assert.equal(new Set(accents).size, accents.length);
+});

@@ -74,13 +74,15 @@ test('redis section renders flat (no grouping)', () => {
   assert.equal(groupSectionHosts('redis', [makeHost('r', 'redis')]), null);
 });
 
-test('grouped rows: hover-revealed secondary actions + engine accent dot/header', () => {
+test('grouped cards: vault card language + engine accent header + hover actions', () => {
   const source = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
   assert.match(source, /group\/row/);
   assert.match(source, /group-hover\/row:opacity-100/);
   assert.match(source, /focus-within:opacity-100/);
+  assert.match(source, /soft-card elevate rounded-xl/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(230px,1fr\)\)\]/);
   assert.match(source, /backgroundColor: engine\.accent/);
+  assert.match(source, /color: engine\.accent/);
   assert.match(source, /backgroundColor: rowAccent\(host\)/);
-  assert.match(source, /font-medium text-foreground\/80">\{engine\.label\}<\/span>/);
   assert.doesNotMatch(source, /<Badge variant="outline">/);
 });

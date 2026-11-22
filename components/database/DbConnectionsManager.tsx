@@ -8,7 +8,7 @@
  * Databases section renders engine-grouped (registry order, brand accent
  * per group); Redis stays a single flat list with the same row treatment.
  */
-import { Pencil, Plus, Trash2, Copy, Play } from 'lucide-react';
+import { Database, Pencil, Plus, Trash2, Copy, Play } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
@@ -71,12 +71,15 @@ export interface DbConnectionsManagerOwnProps {
   onConnect: (host: Host) => void;
 }
 
-const rowClasses =
-  'group/row rounded-lg border border-border/50 px-3 py-2 flex items-center gap-2.5 '
-  + 'hover:bg-foreground/5 hover:border-border transition-colors';
+// Card language mirrors the vault host grid (soft-card elevate rounded-xl).
+const cardClasses =
+  'group/row soft-card elevate rounded-xl h-[68px] px-3 py-2 relative cursor-pointer '
+  + 'flex items-center transition-[opacity,box-shadow,border-color,background-color] duration-150 '
+  + 'hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40';
 const secondaryActions =
-  'flex items-center gap-0.5 opacity-0 group-hover/row:opacity-100 '
+  'flex items-center opacity-0 group-hover/row:opacity-100 '
   + 'focus-within:opacity-100 transition-opacity';
+const cardGrid = 'grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-3';
 
 const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsManagerOwnProps> = ({
   section, metaLine, pickDialect, detailsPanel,
@@ -114,37 +117,59 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
     setPendingDialect(null);
   };
 
-  const hostRow = (host: Host) => (
-    <div key={host.id} className={rowClasses}>
-      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: rowAccent(host) }} aria-hidden />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm truncate leading-tight">{host.label || host.hostname}</p>
-        <p className="text-xs text-muted-foreground truncate mt-0.5">
-          {dbRowAddressLine(host)}{metaLine(host)}
-        </p>
+  const hostCard = (host: Host) => (
+    <div
+      key={host.id}
+      className={cardClasses}
+      role="button"
+      tabIndex={0}
+      aria-label={`${host.label || host.hostname} · ${t('db.action.connect')}`}
+      onClick={() => onConnect(host)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onConnect(host);
+      }}
+    >
+      <div className="flex items-center gap-3 h-full min-w-0">
+        <div
+          className="h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ backgroundColor: rowAccent(host) }}
+          aria-hidden
+        >
+          <Database size={18} className="text-white" />
+        </div>
+        <div className="min-w-0 flex flex-col justify-center gap-0.5 flex-1">
+          <span className="text-sm font-semibold truncate leading-5">{host.label || host.hostname}</span>
+          <span className="text-[11px] text-muted-foreground font-mono truncate leading-4">
+            {dbRowAddressLine(host)}{metaLine(host)}
+          </span>
+        </div>
       </div>
-      <Button variant="ghost" size="icon" className="flex-shrink-0" aria-label={t('db.action.connect')} onClick={() => onConnect(host)}>
-        <Play size={14} />
-      </Button>
-      <div className={secondaryActions}>
-        <Button variant="ghost" size="icon" aria-label={t('db.action.edit')} onClick={() => openEdit(host)}>
-          <Pencil size={14} />
+      <div className="absolute top-1 right-1 flex items-center">
+        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('db.action.connect')} onClick={(e) => { e.stopPropagation(); onConnect(host); }}>
+          <Play size={14} />
         </Button>
-        <Button variant="ghost" size="icon" aria-label={t('db.action.duplicate')}
-          onClick={() => void onUpdateHosts((prev) => [...prev, { ...host, id: crypto.randomUUID(), label: `${host.label || host.hostname} copy` }])}>
-          <Copy size={14} />
-        </Button>
-        <Button variant="ghost" size="icon" aria-label={t('db.action.delete')} onClick={() => setDeleteTarget(host)}>
-          <Trash2 size={14} />
-        </Button>
+        <div className={secondaryActions}>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('db.action.edit')} onClick={(e) => { e.stopPropagation(); openEdit(host); }}>
+            <Pencil size={13} />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('db.action.duplicate')}
+            onClick={(e) => { e.stopPropagation(); void onUpdateHosts((prev) => [...prev, { ...host, id: crypto.randomUUID(), label: `${host.label || host.hostname} copy` }]); }}>
+            <Copy size={13} />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('db.action.delete')} onClick={(e) => { e.stopPropagation(); setDeleteTarget(host); }}>
+            <Trash2 size={13} />
+          </Button>
+        </div>
       </div>
     </div>
   );
 
   const groupedHeader = (engine: SqlEngineDescriptor, count: number) => (
-    <div className="flex items-center gap-2 pt-4 pb-1.5 first:pt-0.5">
-      <span className="w-1 h-3.5 rounded-full flex-shrink-0" style={{ backgroundColor: engine.accent }} aria-hidden />
-      <span className="text-xs font-medium text-foreground/80">{engine.label}</span>
+    <div className="flex items-center gap-2 pt-5 pb-2 first:pt-1">
+      <span className="w-1 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: engine.accent }} aria-hidden />
+      <span className="text-sm font-semibold" style={{ color: engine.accent }}>{engine.label}</span>
       <span className="text-[11px] text-muted-foreground">{count}</span>
     </div>
   );
@@ -170,15 +195,15 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
       {sectionHosts.length === 0 ? (
         <div className="p-8 text-center text-sm text-muted-foreground">{t(`db.section.${section}.empty`)}</div>
       ) : (
-        <div className="px-3 pb-3 overflow-auto" style={{ height: 'calc(100% - 49px)' }}>
+        <div className="px-4 pb-4 overflow-auto" style={{ height: 'calc(100% - 49px)' }}>
           {groups
             ? groups.map((group) => (
               <section key={group.engine.id} aria-label={group.engine.label}>
                 {groupedHeader(group.engine, group.hosts.length)}
-                <div className="space-y-1">{group.hosts.map(hostRow)}</div>
+                <div className={cardGrid}>{group.hosts.map(hostCard)}</div>
               </section>
             ))
-            : <div className="pt-2 space-y-2">{sectionHosts.map(hostRow)}</div>}
+            : <div className={`pt-2 ${cardGrid}`}>{sectionHosts.map(hostCard)}</div>}
         </div>
       )}
       {(creating || editing) && detailsPanel({

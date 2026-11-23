@@ -26,7 +26,7 @@ import {
 } from "../../domain/hostClickBehavior";
 import type { GroupNode, Host } from "../../domain/models";
 import { isPluginHostProtocol } from "../../domain/pluginConnection";
-import { OpenDualPaneSftpMenuItem, OpenHostBrowserMenuItem } from "../host/HostTreeContextMenus";
+import { CopyDbConnectionStringMenuItem, OpenDualPaneSftpMenuItem, OpenHostBrowserMenuItem } from "../host/HostTreeContextMenus";
 import { VAULT_HOST_DRAG_IDS, isVaultHostDraggable } from "../../domain/vaultHostDrag";
 import { getVaultHostRowSubtitle } from "../../domain/localShellHost";
 import { beginVaultHostCardDrag } from "./vaultHostDragImage";
@@ -62,7 +62,21 @@ const noopSetMultiSelectMode = (_enabled: boolean) => {};
 const noopSetSelectedHostIds = (_ids: Set<string>) => {};
 
 export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext }) {
-  const { Badge, Boolean, Button, cancelInlineGroupEdit, CheckSquare, ClipboardCopy, Clock, cn, commitInlineGroupRename, ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger, Copy, displayedGroups, displayedHosts, DistroAvatar, Edit2, FileSymlink, FolderPlus, FolderTree, getDropTargetClasses, getEffectiveHostDistro, groupConfigs, groupedDisplayHosts, handleCopyCredentials, handleCopyHostname, handleDuplicateHost, handleEditGroupConfig, handleEditHost, handleHostConnect, handleOpenHostBrowser, hostClickBehavior: hostClickBehaviorProp, handleUnmanageGroup, hasHostsSidePanel, hostListScrollRef, HostTreeView, isHostsSectionActive, isMultiSelectMode, lastPinnedId, LayoutGrid, managedGroupPaths, moveGroup, moveHostToGroup, moveHostsToGroup, onDeleteHost, Pin, pinnedHosts, Plug, recentHosts, reorderGroup, reorderHost, sanitizeHost, search, selectedGroupPath, selectedGroupPaths, selectedHostIds, selectedTags, sessionCount, setDeleteTargetPath, setDragOverDropTarget, setGroupDragOverDropTarget, setIsDeleteGroupOpen, setIsMultiSelectMode = noopSetMultiSelectMode, setIsNewFolderOpen, setLastPinnedId, setNewFolderName, setSelectedGroupPath, setSelectedHostIds = noopSetSelectedHostIds, setTargetParentPath, shouldHideEmptyRootHostsSection, showRecentHosts, sortMode, Square, Star, startInlineDeleteGroup, startInlineNewGroup, startInlineRenameGroup, t, toggleGroupSelection, toggleHostPinned, toggleHostSelection, Trash2, treeExpandedState, treeViewGroupTree, treeViewHosts, viewMode, visibleDisplayedHosts } = ctx;
+  const { Badge, Boolean, Button, cancelInlineGroupEdit, CheckSquare, ClipboardCopy, Clock, cn, commitInlineGroupRename, ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger, Copy, displayedGroups, displayedHosts, DistroAvatar, Edit2, FileSymlink, FolderPlus, FolderTree, getDropTargetClasses, getEffectiveHostDistro, groupConfigs, groupedDisplayHosts, handleCopyCredentials, handleCopyHostname, handleDuplicateHost, handleEditGroupConfig, handleEditHost, handleHostConnect, handleOpenHostBrowser, hostClickBehavior: hostClickBehaviorProp, handleUnmanageGroup, hasHostsSidePanel, hostListScrollRef, HostTreeView, isHostsSectionActive, isMultiSelectMode, lastPinnedId, LayoutGrid, managedGroupPaths, moveGroup, moveHostToGroup, moveHostsToGroup, onDeleteHost, Pin, pinnedHosts, Plug, recentHosts, reorderGroup, reorderHost, sanitizeHost, search, selectedGroupPath, selectedGroupPaths, selectedHostIds, selectedTags, sessionCount, onlineHostIds, setDeleteTargetPath, setDragOverDropTarget, setGroupDragOverDropTarget, setIsDeleteGroupOpen, setIsMultiSelectMode = noopSetMultiSelectMode, setIsNewFolderOpen, setLastPinnedId, setNewFolderName, setSelectedGroupPath, setSelectedHostIds = noopSetSelectedHostIds, setTargetParentPath, shouldHideEmptyRootHostsSection, showRecentHosts, sortMode, Square, Star, startInlineDeleteGroup, startInlineNewGroup, startInlineRenameGroup, t, toggleGroupSelection, toggleHostPinned, toggleHostSelection, Trash2, treeExpandedState, treeViewGroupTree, treeViewHosts, viewMode, visibleDisplayedHosts } = ctx;
+
+  const EMPTY_ONLINE_HOST_IDS = new Set<string>();
+  const isHostOnline = (hostId: string) => (onlineHostIds ?? EMPTY_ONLINE_HOST_IDS).has(hostId);
+  const renderHostAvatar = (host: Host, fallback: string) => (
+    <div className="relative shrink-0">
+      <DistroAvatar host={host} fallback={fallback} size="lg" />
+      {isHostOnline(host.id) && (
+        <span
+          aria-hidden
+          className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-emerald-500"
+        />
+      )}
+    </div>
+  );
   const hostClickBehavior: HostClickBehavior = hostClickBehaviorProp === 'select' ? 'select' : 'connect';
   const multiSelectedGroupPaths: Set<string> = selectedGroupPaths ?? EMPTY_GROUP_PATH_SET;
   const [draggingHostIds, setDraggingHostIds] = React.useState<ReadonlySet<string> | null>(null);
@@ -567,6 +581,14 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                               </span>
                             );
                           })}
+                    <div className="ml-auto flex items-center gap-2 text-xs font-normal text-muted-foreground">
+                      <span>
+                        {t("vault.hosts.header.entries", { count: visibleDisplayedHosts.length })}
+                      </span>
+                      <div className="bg-secondary/80 border border-border/70 rounded-md px-2 py-1 text-[11px]">
+                        {t("vault.hosts.header.live", { count: sessionCount })}
+                      </div>
+                    </div>
                     </div>
                   </section>
                 )}
@@ -646,7 +668,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                         )}
                                       </div>
                                     )}
-                                    <DistroAvatar host={safeHost} fallback={distroBadge.text} size="lg" />
+                                    {renderHostAvatar(safeHost, distroBadge.text)}
                                     <div className="min-w-0 flex flex-col justify-center gap-0.5 flex-1">
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-sm font-semibold truncate leading-5">
@@ -680,6 +702,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                     <Copy className="mr-2 h-4 w-4" /> {t('terminal.statusbar.copyHostname.label')}
                                   </ContextMenuItem>
                                 ) : null}
+                                <CopyDbConnectionStringMenuItem host={host} />
                                 <ContextMenuItem onClick={() => handleCopyCredentials(host)}>
                                   <ClipboardCopy className="mr-2 h-4 w-4" /> {t('vault.hosts.copyCredentials')}
                                 </ContextMenuItem>
@@ -767,7 +790,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                         )}
                                       </div>
                                     )}
-                                    <DistroAvatar host={safeHost} fallback={distroBadge.text} size="lg" />
+                                    {renderHostAvatar(safeHost, distroBadge.text)}
                                     <div className="min-w-0 flex flex-col justify-center gap-0.5 flex-1">
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-sm font-semibold truncate leading-5">
@@ -801,6 +824,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                     <Copy className="mr-2 h-4 w-4" /> {t('terminal.statusbar.copyHostname.label')}
                                   </ContextMenuItem>
                                 ) : null}
+                                <CopyDbConnectionStringMenuItem host={host} />
                                 <ContextMenuItem onClick={() => handleCopyCredentials(host)}>
                                   <ClipboardCopy className="mr-2 h-4 w-4" /> {t('vault.hosts.copyCredentials')}
                                 </ContextMenuItem>
@@ -1004,19 +1028,21 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
 
                 {!shouldHideEmptyRootHostsSection && (
                 <section className="space-y-2">
+                  {viewMode === "tree" && (
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-muted-foreground">
                       {t("vault.nav.hosts")}
                     </h3>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <span>
-                        {t("vault.hosts.header.entries", { count: viewMode === "tree" ? treeViewHosts.length : visibleDisplayedHosts.length })}
+                        {t("vault.hosts.header.entries", { count: treeViewHosts.length })}
                       </span>
                       <div className="bg-secondary/80 border border-border/70 rounded-md px-2 py-1 text-[11px]">
                         {t("vault.hosts.header.live", { count: sessionCount })}
                       </div>
                     </div>
                   </div>
+                  )}
 
                   {viewMode === "tree" ? (
                     <HostTreeView
@@ -1142,11 +1168,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                               )}
                                             </div>
                                           )}
-                                          <DistroAvatar
-                                            host={safeHost}
-                                            fallback={distroBadge.text}
-                                            size="lg"
-                                          />
+                                          {renderHostAvatar(safeHost, distroBadge.text)}
                                           <div className="min-w-0 flex flex-col justify-center gap-0.5 flex-1">
                                             <div className="flex items-center gap-1.5">
                                               <span className="text-sm font-semibold truncate leading-5">
@@ -1191,6 +1213,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                         <Copy className="mr-2 h-4 w-4" /> {t('terminal.statusbar.copyHostname.label')}
                                       </ContextMenuItem>
                                     ) : null}
+                                      <CopyDbConnectionStringMenuItem host={host} />
                                       <ContextMenuItem
                                         onClick={() => handleCopyCredentials(host)}
                                       >
@@ -1293,11 +1316,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                         )}
                                       </div>
                                     )}
-                                    <DistroAvatar
-                                      host={safeHost}
-                                      fallback={distroBadge.text}
-                                      size="lg"
-                                    />
+                                    {renderHostAvatar(safeHost, distroBadge.text)}
                                     <div className="min-w-0 flex flex-col justify-center gap-0.5 flex-1">
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-sm font-semibold truncate leading-5">
@@ -1342,6 +1361,7 @@ export function VaultHostListSection({ ctx }: { ctx: VaultHostListSectionContext
                                         <Copy className="mr-2 h-4 w-4" /> {t('terminal.statusbar.copyHostname.label')}
                                       </ContextMenuItem>
                                     ) : null}
+                                      <CopyDbConnectionStringMenuItem host={host} />
                                       <ContextMenuItem
                                         onClick={() => handleCopyCredentials(host)}
                                       >

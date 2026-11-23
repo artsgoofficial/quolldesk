@@ -67,6 +67,7 @@ export const enCoreMessages: Messages = {
   "settings.plugins.landing.status.idle": "Enabled, idle",
   // Common
   'common.save': 'Save',
+  'common.copied': 'Copied',
   'common.cancel': 'Cancel',
   'common.close': 'Close',
   'common.reset': 'Reset',
@@ -414,6 +415,8 @@ export const enCoreMessages: Messages = {
 
   // Settings > Application
   'settings.application.checkUpdates': 'Check for updates',
+  'settings.application.section.about': 'About',
+  'settings.application.section.community': 'Get involved',
   'settings.application.reportProblem': 'Report a problem',
   'settings.application.reportProblem.subtitle': 'Generate a pre-filled GitHub issue',
   'settings.application.community': 'Community',
@@ -1241,7 +1244,7 @@ Highlight the focused split pane:
   'vault.hosts.header.live': '{count} live',
 
   // Vault hosts header/actions
-  'vault.hosts.search.placeholder': 'Find a host or ssh user@hostname / ssh -p 2222 user@hostname...',
+  'vault.hosts.search.placeholder': 'Search hosts or paste an ssh command…',
   'vault.hosts.connect': 'Connect',
   'vault.hosts.openSftp': 'Open SFTP',
   'vault.view.grid': 'Grid',
@@ -1267,6 +1270,9 @@ Highlight the focused split pane:
   'vault.hosts.copyCredentials': 'Copy Credentials',
   'vault.hosts.copyCredentials.toast.success': 'Credentials copied to clipboard',
   'vault.hosts.copyCredentials.toast.noPassword': 'No password saved for this host',
+  'vault.hosts.copyConnectionString': 'Copy Connection String',
+  'vault.hosts.copyConnectionString.toast.success': 'Connection string copied to clipboard',
+  'vault.hosts.copyConnectionString.toast.error': 'Failed to copy connection string',
   'vault.hosts.multiSelect': 'Multi-select',
   'vault.hosts.selected': '{count} selected',
   'vault.hosts.selectedSummary': '{hosts} hosts and {groups} groups selected',

@@ -370,3 +370,5 @@ export const STORAGE_KEY_SESSION_LOG_APPLICATION = "quolldesk.sessionLogApplicat
 export const STORAGE_KEY_DB_QUERY_HISTORY = 'quolldesk_db_query_history_v1';
 /** Per-dialect favorite SQL queries, capped at 50: `{ mysql: string[], postgresql: string[] }`. */
 export const STORAGE_KEY_DB_QUERY_FAVORITES = 'quolldesk_db_query_favorites_v1';
+/** Last chosen charset for the BLOB viewer's text preview: a blobViewer BlobEncodingId. */
+export const STORAGE_KEY_DB_BLOB_ENCODING = 'quolldesk_db_blob_encoding_v1';

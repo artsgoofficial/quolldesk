@@ -31,39 +31,60 @@ export interface SqlEngineDescriptor {
     designer: boolean;
     backupRestore: boolean;
     indexMethods: string[];
+    /** CREATE INDEX … WHERE <predicate> partial/filtered indexes (designer). */
+    indexWhere: boolean;
+    /** Per-column NULLS FIRST/LAST in index key parts (designer). */
+    indexNulls: boolean;
+    /** Server session manager (pg_stat_activity / processlist / dm_exec_sessions). */
+    sessions: boolean;
+    /** TRUNCATE TABLE context-menu action (sqlite has none). */
+    truncate: boolean;
+    /** The bridge honors a query-level timeoutMs clamp. */
+    queryTimeout: boolean;
   };
   columnTypes: string[];
 }
+
+/** mysql/mariadb are wire-compatible: they share the type list and capability set. */
+const MYSQL_FAMILY_COLUMN_TYPES = ['tinyint(1)', 'tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'int unsigned', 'bigint unsigned', 'decimal(10,2)', 'float', 'double', 'bit(1)', 'boolean', 'char(36)', 'varchar(255)', 'tinytext', 'text', 'mediumtext', 'longtext', 'binary(16)', 'varbinary(255)', 'tinyblob', 'blob', 'mediumblob', 'longblob', 'date', 'time', 'datetime', 'timestamp', 'year', 'json', "enum('a','b')", "set('a','b')"];
+
+const MYSQL_FAMILY_FEATURES: SqlEngineDescriptor['features'] = {
+  tls: true, tunnel: true, explain: true, designer: true, backupRestore: true,
+  indexMethods: ['BTREE', 'HASH'], indexWhere: false, indexNulls: false, sessions: true, truncate: true, queryTimeout: true,
+};
 
 export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
   { id: 'mysql',      label: 'MySQL',      defaultPort: 3306,  cap: 'Mysql',   addressMode: 'hostPort', schemaQualified: false, completionDialect: 'mysql',      monacoLanguage: 'sql',   indexMethodStyle: 'mysql',
     placeholderUsername: 'root',       placeholderDatabase: 'mysql',
     accent: '#1E7BA8',
-    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['BTREE', 'HASH'] },
-    columnTypes: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'] },
+    features: MYSQL_FAMILY_FEATURES,
+    columnTypes: MYSQL_FAMILY_COLUMN_TYPES },
   { id: 'postgresql', label: 'PostgreSQL', defaultPort: 5432,  cap: 'Pg',      addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'postgresql', monacoLanguage: 'pgsql', indexMethodStyle: 'pg',
     placeholderUsername: 'postgres',   placeholderDatabase: 'postgres',
     accent: '#336791',
-    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'] },
-    columnTypes: ['smallint', 'integer', 'bigint', 'numeric(10,2)', 'varchar(255)', 'text', 'date', 'timestamp', 'timestamptz', 'boolean', 'jsonb', 'uuid'] },
+    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'], indexWhere: true, indexNulls: true, sessions: true, truncate: true, queryTimeout: false },
+    columnTypes: ['smallint', 'integer', 'bigint', 'smallserial', 'serial', 'bigserial', 'numeric(10,2)', 'real', 'double precision', 'money', 'varchar(255)', 'text', 'bytea', 'date', 'time', 'timestamp', 'timestamptz', 'interval', 'boolean', 'json', 'jsonb', 'uuid', 'xml', 'inet', 'cidr', 'macaddr'] },
   { id: 'mariadb',    label: 'MariaDB',    defaultPort: 3306,  cap: 'Mariadb', addressMode: 'hostPort', schemaQualified: false, completionDialect: 'mysql',      monacoLanguage: 'sql',   indexMethodStyle: 'mysql',
     placeholderUsername: 'root',       placeholderDatabase: 'mysql',
     accent: '#A2593C',
-    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['BTREE', 'HASH'] },
-    columnTypes: ['tinyint(1)', 'int', 'bigint', 'decimal(10,2)', 'varchar(255)', 'char(36)', 'text', 'date', 'datetime', 'timestamp', 'json', 'boolean'] },
+    features: MYSQL_FAMILY_FEATURES,
+    columnTypes: MYSQL_FAMILY_COLUMN_TYPES },
   { id: 'mssql',      label: 'SQL Server', defaultPort: 1433,  cap: 'Mssql',   addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'tsql',
     placeholderUsername: 'sa',         placeholderDatabase: 'master',
     accent: '#A93038',
     // tunnel: false (Ruling 8) — tedious dials TCP directly; there is no socket
     // to inject through an SSH tunnel, and the mssql bridge ignores opts.ssh.
-    features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'] },
-    columnTypes: ['int', 'bigint', 'decimal(10,2)', 'nvarchar(255)', 'nvarchar(max)', 'char(36)', 'date', 'datetime2', 'smalldatetime', 'bit', 'float', 'real', 'uniqueidentifier', 'varbinary(max)', 'xml'] },
+    features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'], indexWhere: true, indexNulls: false, sessions: true, truncate: true, queryTimeout: true },
+    columnTypes: ['tinyint', 'smallint', 'int', 'bigint', 'decimal(10,2)', 'numeric(18,0)', 'money', 'smallmoney', 'float', 'real', 'bit', 'char(36)', 'nchar(10)', 'varchar(255)', 'nvarchar(255)', 'nvarchar(max)', 'binary(16)', 'varbinary(max)', 'date', 'time', 'smalldatetime', 'datetime2', 'datetimeoffset', 'uniqueidentifier', 'xml', 'sql_variant'] },
   { id: 'sqlite',     label: 'SQLite',     defaultPort: null,  cap: 'Sqlite',  addressMode: 'file',     schemaQualified: false, completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'none',
     placeholderUsername: '',           placeholderDatabase: '',
     accent: '#0F7B6C',
-    features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [] },
-    columnTypes: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC', 'BOOLEAN', 'DATE', 'DATETIME', 'JSON', 'VARCHAR(255)', 'BIGINT', 'DOUBLE'] },
+    features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [], indexWhere: true, indexNulls: false, sessions: false, truncate: false, queryTimeout: false },
+    columnTypes: ['INTEGER', 'BIGINT', 'SMALLINT', 'TEXT', 'VARCHAR(255)', 'CHAR(36)', 'CLOB', 'REAL', 'DOUBLE', 'FLOAT', 'BLOB', 'NUMERIC', 'DECIMAL(10,2)', 'BOOLEAN', 'DATE', 'DATETIME', 'JSON'] },
 ];
+
+/** Palette for database connection accent colors (card stripe). */
+export const DB_ACCENT_COLORS = ['#336791', '#1E7BA8', '#0F7B6C', '#A2593C', '#A93038', '#7C3AED', '#B45309', '#4B5563'] as const;
 
 export const SQL_ENGINE_BY_ID: Readonly<Record<SqlEngineId, SqlEngineDescriptor>> =
   Object.fromEntries(SQL_ENGINES.map((e) => [e.id, e])) as Readonly<Record<SqlEngineId, SqlEngineDescriptor>>;

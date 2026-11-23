@@ -118,12 +118,6 @@ function runOne(db, sql, values) {
  */
 function runAll(db, sql) { return [runOne(db, sql)]; }
 
-function toResultSets(db, statements, values) {
-  const resultSets = [];
-  for (const statement of statements) resultSets.push(runOne(db, statement, values));
-  return resultSets;
-}
-
 // node:sqlite surfaces SQLITE_READONLY as errcode 8 / "attempt to write a
 // readonly database" — classifyDriverError has no pattern for it, so map it to
 // PERMISSION_DENIED (the read-only gate refused the write) before the generic
@@ -322,26 +316,62 @@ function registerHandlers(ipcMain, options = {}) {
     const db = entry.client.db;
     try {
       // PRAGMA statements cannot be parameterized — the identifier is quoted
-      // into the pragma text with q() (doubled inner quotes).
-      const columns = db.prepare(`PRAGMA table_info(${q(table)})`).all().map((c) => ({
+      // into the pragma text with q() (doubled inner quotes). One table_info
+      // pass feeds both the column grid and the PK ordering.
+      const infoRows = db.prepare(`PRAGMA table_info(${q(table)})`).all();
+      const columns = infoRows.map((c) => ({
         name: c.name, type: c.type, nullable: c.notnull === 0, key: c.pk > 0 ? "PRI" : null, defaultValue: c.dflt_value,
       }));
-      const pkCols = db.prepare(`PRAGMA table_info(${q(table)})`).all()
-        .filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+      const pkCols = infoRows.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
       const indexes = db.prepare(`PRAGMA index_list(${q(table)})`).all().map((idx) => ({
         name: idx.name, unique: idx.unique === 1,
         columns: db.prepare(`PRAGMA index_info(${q(idx.name)})`).all().map((c) => c.name),
         method: "btree",
       }));
       const ddlRow = db.prepare("SELECT sql FROM sqlite_master WHERE type IN ('table','view') AND name = ?").get(table);
-      const fks = db.prepare(`PRAGMA foreign_key_list(${q(table)})`).all()
-        .filter((f) => f.table).map((f) => ({ column: f.from, refTable: f.table, refColumn: f.to ?? null }));
-      const count = db.prepare(`SELECT COUNT(*) AS c FROM ${q(table)}`).get();
+      // Group PRAGMA rows by constraint id into composite-capable FKs with
+      // the canonical action values (sqlite reports lower-case; normalize).
+      const fkSeen = new Map();
+      for (const f of db.prepare(`PRAGMA foreign_key_list(${q(table)})`).all()) {
+        if (!f.table) continue;
+        const fk = fkSeen.get(f.id)
+          || { id: f.id, name: null, columns: [], refTable: f.table, refSchema: null, refColumns: [], onDelete: (f.on_delete || "NO ACTION").toUpperCase(), onUpdate: (f.on_update || "NO ACTION").toUpperCase() };
+        fk.columns.push(f.from);
+        fk.refColumns.push(f.to ?? null);
+        fkSeen.set(f.id, fk);
+      }
+      // PRAGMA enumerates constraints in DESCENDING id — emit ascending.
+      const fks = [...fkSeen.values()].sort((a, b) => a.id - b.id)
+        .map(({ id: _id, ...fk }) => fk);
+      // Cheap row estimate: MAX(rowid) is a rowid-btree seek, not COUNT(*)'s
+      // full scan — node:sqlite runs synchronously on the main process, so a
+      // large table's COUNT would freeze every window on each table click
+      // (sibling engines use free statistics for the same field). WITHOUT
+      // ROWID tables have no rowid column — fall back to COUNT(*) for them.
+      let count;
+      try {
+        count = db.prepare(`SELECT MAX(rowid) AS c FROM ${q(table)}`).get()?.c;
+      } catch {
+        count = db.prepare(`SELECT COUNT(*) AS c FROM ${q(table)}`).get()?.c;
+      }
+      // Table-level triggers from sqlite_master; timing/event parsed from the
+      // CREATE statement (sqlite has no structured pragma for them).
+      const TRG_RE = /\b(BEFORE|AFTER|INSTEAD OF)\s+(INSERT|UPDATE|DELETE|INSERT OR UPDATE|INSERT OR REPLACE|UPDATE OF [^\s]+)\b/i;
+      const triggers = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name").all(table)
+        .map((r) => {
+          const m = TRG_RE.exec(r.sql || '');
+          return {
+            name: r.name,
+            timing: m ? m[1].toUpperCase() : '',
+            event: m ? m[2].toUpperCase() : '',
+            statement: r.sql || '',
+          };
+        });
       return okEnvelope({
         columns, indexes,
         primaryKey: pkCols.length ? { name: "PRIMARY", columns: pkCols } : null,
-        ddl: ddlRow?.sql ?? null, foreignKeys: fks,
-        rowCountEstimate: Number(count?.c ?? 0),
+        ddl: ddlRow?.sql ?? null, foreignKeys: fks, triggers,
+        rowCountEstimate: Number(count ?? 0),
       });
     } catch (err) {
       return errorEnvelope(classifySqliteError(err), err?.message || "tableMeta failed");
@@ -421,7 +451,7 @@ function registerHandlers(ipcMain, options = {}) {
     try {
       // timeoutMs 不适用本地文件连接,忽略。
       const statements = splitSqlStatements(String(sql), "sqlite");
-      const resultSets = toResultSets(entry.client.db, statements);
+      const resultSets = statements.map((s) => runOne(entry.client.db, s));
       return okEnvelope({
         resultSets,
         executionTimeMs: Date.now() - started,
@@ -511,5 +541,5 @@ function closeAllForSender(senderId) { return registry.closeAllForSender(senderI
 
 module.exports = {
   registerHandlers, closeAllForSender, _setDialogForTests,
-  openDatabase, runOne, runAll, toResultSets, classifySqliteError,
+  openDatabase, runOne, runAll, classifySqliteError,
 };

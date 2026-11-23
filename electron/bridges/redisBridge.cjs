@@ -21,6 +21,10 @@ const {
 const SCAN_COUNT_DEFAULT = 200;
 const VALUE_TRUNCATE_BYTES = 64 * 1024;
 const KEY_TYPES_BATCH_MAX = 200;
+// Mirrors REDIS_DB_INDEX_MAX in domain/models/database.ts (renderer side; this
+// file is plain CJS and cannot import TS): `databases` is server config and 16
+// is only the default, so SELECT must accept indexes beyond the default.
+const REDIS_DB_INDEX_MAX = 65535;
 const PUBSUB_PUSH_CHANNEL = "quolldesk:redis:pubsubMessage";
 // Console-executed commands that would wedge the shared connection or desync
 // the workbench state — the Subscribe page covers pub/sub properly.
@@ -472,8 +476,8 @@ function registerHandlers(ipcMain, options = {}) {
   ipcMain.handle("quolldesk:redis:selectDb", async (_event, { connectionId, db } = {}) => {
     const entry = registry.getConnection(connectionId);
     if (!entry) return errorEnvelope(DB_ERROR_CODES.NOT_CONNECTED, "not connected");
-    if (!Number.isInteger(db) || db < 0 || db > 15) {
-      return errorEnvelope(DB_ERROR_CODES.INVALID_PARAMS, "db must be an integer 0-15");
+    if (!Number.isInteger(db) || db < 0 || db > REDIS_DB_INDEX_MAX) {
+      return errorEnvelope(DB_ERROR_CODES.INVALID_PARAMS, `db must be an integer 0-${REDIS_DB_INDEX_MAX}`);
     }
     if (entry.client.kind === "cluster") {
       return errorEnvelope(DB_ERROR_CODES.INVALID_PARAMS, "cluster mode has a single keyspace; db selection is not supported");
@@ -676,6 +680,17 @@ function registerHandlers(ipcMain, options = {}) {
         const idx = line.indexOf(":");
         if (idx > 0) summary[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       }
+      // Server-configured logical-DB count for the workbench db selector
+      // (INFO's `databases` line is absent on many Redis builds and the
+      // flattened summary carries no section prefixes). Some managed
+      // providers disable CONFIG entirely — absence means the renderer falls
+      // back to the 16-db default.
+      let databases;
+      try {
+        const cfg = await client.configGet("databases");
+        const parsed = Number(cfg?.databases);
+        if (Number.isInteger(parsed) && parsed >= 1) databases = parsed;
+      } catch { /* CONFIG disabled on this provider */ }
       let nodes;
       if (entry.client.kind === "cluster") {
         nodes = clusterMasters(entry.client.client).map((m) => ({
@@ -685,7 +700,7 @@ function registerHandlers(ipcMain, options = {}) {
           role: "master",
         }));
       }
-      return okEnvelope({ summary, nodes });
+      return okEnvelope({ summary, nodes, databases });
     } catch (err) {
       return errorEnvelope(classifyDriverError(err), err?.message || "serverInfo failed");
     }

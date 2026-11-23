@@ -1,4 +1,5 @@
 const test = require("node:test");
+const { waitForPush } = require("./dbCommon/testHelpers.cjs");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -128,20 +129,6 @@ function setupPair() {
 }
 
 /** Poll the captured job-progress pushes until one with `phase` lands. */
-function waitForPush(pushes, phase, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const tick = () => {
-      const hit = pushes.find((p) => p.phase === phase);
-      if (hit) return resolve(hit);
-      if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
 
 function tmpSqlFile(label) {
   return path.join(os.tmpdir(), `nc-mariadb-bridge-test-${label}-${process.pid}-${Math.random().toString(16).slice(2)}.sql`);

@@ -33,6 +33,7 @@ import {
   AsidePanelContent,
 } from "./ui/aside-panel";
 import { Button } from "./ui/button";
+import EmptyState from "./EmptyState";
 
 
 import {
@@ -732,30 +733,25 @@ echo $3 >> "$FILE"`);
               </div>
 
               {orderedKeys.length === 0 ? (
-                <div
-                  className="flex flex-col items-center justify-center h-64 text-muted-foreground"
+                <EmptyState
+                  className="h-64 flex-none"
                   data-section="keychain-empty"
-                >
-                  <div className="h-16 w-16 rounded-2xl bg-secondary/80 flex items-center justify-center mb-4">
-                    <Shield size={32} className="opacity-60" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-foreground mb-2">
-                    {t("keychain.empty.title")}
-                  </h3>
-                  <p className="text-sm text-center max-w-sm mb-4">
-                    {t("keychain.empty.desc")}
-                  </p>
-                  <div className="flex gap-2">
-                    <Button variant="secondary" onClick={openImport}>
-                      <Upload size={14} className="mr-2" />
-                      {t("common.import")}
-                    </Button>
-                    <Button onClick={openGenerate}>
-                      <Plus size={14} className="mr-2" />
-                      {t("common.generate")}
-                    </Button>
-                  </div>
-                </div>
+                  icon={<Shield size={32} />}
+                  title={t("keychain.empty.title")}
+                  hint={t("keychain.empty.desc")}
+                  actions={(
+                    <>
+                      <Button variant="secondary" onClick={openImport}>
+                        <Upload size={14} className="mr-2" />
+                        {t("common.import")}
+                      </Button>
+                      <Button onClick={openGenerate}>
+                        <Plus size={14} className="mr-2" />
+                        {t("common.generate")}
+                      </Button>
+                    </>
+                  )}
+                />
               ) : shouldShowSearchNoResults(
                 search,
                 filteredKeys.length,

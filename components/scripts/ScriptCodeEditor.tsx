@@ -7,7 +7,7 @@ import {
   pasteForMonacoEditorCommand,
   readClipboardTextWithFallbacks,
 } from '@/infrastructure/monaco/monacoClipboardPaste';
-import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/useQuollDeskMonacoTheme';
+import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/usequolldeskMonacoTheme';
 import { configureMonacoLoader } from '@/infrastructure/monaco/monacoLoader';
 import { registerNctMonacoCompletionProvider } from '@/infrastructure/scripts/nctMonacoCompletion.ts';
 

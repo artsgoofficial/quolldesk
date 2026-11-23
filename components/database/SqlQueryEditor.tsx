@@ -1,11 +1,11 @@
 import Editor, { type OnMount, useMonaco } from '@monaco-editor/react';
-import { ChevronDown, ChevronUp, Download, History, Play, Plus, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlignLeft, ChevronDown, ChevronUp, Download, History, Play, Plus, Sparkles, Star, Trash2, X } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
-import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/useQuollDeskMonacoTheme';
+import { useQuollDeskMonacoTheme } from '@/infrastructure/monaco/usequolldeskMonacoTheme';
 import { configureMonacoLoader } from '@/infrastructure/monaco/monacoLoader';
 import {
   attachSqlValidation,
@@ -27,6 +27,7 @@ import { Button } from '../ui/button';
 import { Dropdown, DropdownContent, DropdownTrigger } from '../ui/dropdown';
 import { toast } from '../ui/toast';
 import { downloadCsv, downloadInserts, downloadJson } from './csv';
+import { formatSql } from './sqlFormat';
 import { splitSqlStatements } from './splitSqlStatements';
 
 interface SqlQueryEditorProps {
@@ -84,11 +85,10 @@ type EngineQueryLists = Record<SqlEngineId, string[]>;
 
 const QUERY_LIST_CAP = 50;
 
-// Statement timeout for engines whose bridge honors one (mysql family +
-// mssql clamp to 120s); pg never had one and sqlite runs on a local file,
-// so neither sends a value.
+// Statement timeout for engines whose bridge honors one (registry
+// features.queryTimeout: mysql family + mssql clamp to 120s); pg never had
+// one and sqlite runs on a local file, so neither sends a value.
 const QUERY_TIMEOUT_MS = 120_000;
-const QUERY_TIMEOUT_ENGINES: ReadonlySet<SqlEngineId> = new Set(['mysql', 'mariadb', 'mssql']);
 
 configureMonacoLoader();
 
@@ -199,7 +199,7 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
           const result = await client.query({
             connectionId,
             sql: statement,
-            ...(QUERY_TIMEOUT_ENGINES.has(dialect) ? { timeoutMs: QUERY_TIMEOUT_MS } : {}),
+            ...(SQL_ENGINE_BY_ID[dialect].features.queryTimeout ? { timeoutMs: QUERY_TIMEOUT_MS } : {}),
           });
           entries.push({
             sql: statement,
@@ -233,6 +233,20 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
 
   const runRef = useRef(run);
   useEffect(() => { runRef.current = run; }, [run]);
+
+  // Format action: replaces the whole model through executeEdits so the undo
+  // stack survives (setValue would wipe it). No-op on empty or already-clean
+  // text; Shift+Alt+F is bound on editor mount (monaco swallows keydown).
+  const formatCurrent = useCallback(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const formatted = formatSql(dialect, model.getValue());
+    if (formatted === model.getValue()) return;
+    editor.executeEdits('sql-format', [{ range: model.getFullModelRange(), text: formatted }]);
+  }, [dialect]);
+  const formatRef = useRef(formatCurrent);
+  useEffect(() => { formatRef.current = formatCurrent; }, [formatCurrent]);
 
   // SQL intellisense context, shared with the completion providers through a
   // mutable object so a refreshed schemaTree reaches them without re-registering.
@@ -402,6 +416,10 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
       monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Enter,
       () => runRef.current(),
     );
+    editor.addCommand(
+      monacoInstance.KeyMod.Shift | monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.KeyF,
+      () => formatRef.current(),
+    );
     registerSqlCompletionProviders(monacoInstance);
     const model = editor.getModel();
     if (model) setSqlEditorContext(model, sqlContextRef.current);
@@ -556,6 +574,12 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
         <div className="flex flex-col gap-1">
           <Button size="sm" className="font-medium" disabled={running || !activeTab.sql.trim()} onClick={() => void run()}>
             <Play size={13} className="mr-1" />{t('db.workbench.query.run')}
+          </Button>
+          <Button variant="outline" size="sm"
+            disabled={!activeTab.sql.trim()}
+            title={t('db.query.format')}
+            onClick={() => formatRef.current()}>
+            <AlignLeft size={13} className="mr-1" />{t('db.query.format')}
           </Button>
           <Button variant="outline" size="sm"
             disabled={running || !explainSupported || !activeTab.sql.trim() || !explainable}

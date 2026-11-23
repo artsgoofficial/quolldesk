@@ -61,6 +61,7 @@ import { readTextFile } from "../../lib/readTextFile";
 import { buildTextFilesZipBlob } from "../../lib/textZip";
 import type { Host, VaultNote } from "../../types";
 import { Button } from "../ui/button";
+import EmptyState from "../EmptyState";
 import { LazyLoadBoundary } from "../ui/lazy-load-boundary";
 import {
   ContextMenu,
@@ -2103,23 +2104,23 @@ export const NotesManager: React.FC<NotesManagerProps> = ({
             </>
           ) : (
             <div className="flex flex-1 items-center justify-center px-4">
-              <div className="flex max-w-sm flex-col items-center text-center text-muted-foreground">
-                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-secondary/80">
-                  <Edit2 size={30} className="opacity-60" />
-                </div>
-                <h3 className="mb-2 text-lg font-semibold text-foreground">{t("notes.empty.title")}</h3>
-                <p className="mb-4 text-sm">{t("notes.empty.desc")}</p>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  <Button onClick={addNote}>
-                    <Plus size={14} className="mr-2" />
-                    {t("notes.action.newNote")}
-                  </Button>
-                  <Button variant="outline" onClick={() => openImportMarkdownPicker()}>
-                    <Upload size={14} className="mr-2" />
-                    {t("notes.action.importMarkdown")}
-                  </Button>
-                </div>
-              </div>
+              <EmptyState
+                icon={<Edit2 size={30} />}
+                title={t("notes.empty.title")}
+                hint={t("notes.empty.desc")}
+                actions={(
+                  <>
+                    <Button onClick={addNote}>
+                      <Plus size={14} className="mr-2" />
+                      {t("notes.action.newNote")}
+                    </Button>
+                    <Button variant="outline" onClick={() => openImportMarkdownPicker()}>
+                      <Upload size={14} className="mr-2" />
+                      {t("notes.action.importMarkdown")}
+                    </Button>
+                  </>
+                )}
+              />
             </div>
           )}
         </main>

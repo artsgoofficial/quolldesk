@@ -38,7 +38,7 @@ import type { DropEntry } from '../../lib/sftpFileUtils';
 import type { GroupConfig, Host, Identity, KnownHost, ProxyProfile, SSHKey, Snippet, TerminalSession, VaultNote, Workspace } from '../../types';
 import type { ExecutorContext } from '../../infrastructure/ai/quollAgent/executor';
 import type { AISession } from '../../infrastructure/ai/types';
-import Terminal from '../terminal';
+import Terminal from '../Terminal';
 import { removePaneVisible, setPaneVisible } from '../terminal/paneVisibilityStore';
 import type { TerminalBroadcastInputOptions } from '../terminal/terminalHelpers';
 import type { TerminalContextReader } from '../../domain/terminalContextRead';

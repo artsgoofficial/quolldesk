@@ -70,3 +70,20 @@ test("vault import destination rejects an existing group that was deleted", () =
     availableGroups: ["Production"],
   }), null);
 });
+
+test("Xshell supports Sessions directory and single .xsh file selection", () => {
+  const files = [
+    new File(["[Connection]"], "one.xsh"),
+    new File(["[Connection]"], "two.xsh"),
+  ];
+
+  assert.deepEqual(getVaultImportPickerMode("xshell"), {
+    directory: true,
+    multiple: true,
+  });
+  assert.deepEqual(getVaultImportPickerMode("xshell", "file"), {
+    directory: false,
+    multiple: false,
+  });
+  assert.deepEqual(selectVaultImportFiles("xshell", files), files);
+});

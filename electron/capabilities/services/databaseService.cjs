@@ -174,13 +174,10 @@ function createDatabaseService(deps = {}) {
   // values come from AI params — never interpolated as bare identifiers).
   const tsqlLiteral = (v) => "N'" + String(v).replace(/'/g, "''") + "'";
 
-  // Mirrors mssqlBridge's EXCLUDED_SCHEMAS: system schemas stay out of the
-  // default listing (still reachable via an explicit `schema` param).
-  const MSSQL_SYSTEM_SCHEMAS = Object.freeze([
-    "guest", "INFORMATION_SCHEMA", "sys", "db_owner", "db_accessadmin", "db_securityadmin",
-    "db_ddladmin", "db_backupoperator", "db_datareader", "db_datawriter",
-    "db_denydatareader", "db_denydatawriter",
-  ]);
+  // mssqlBridge's EXCLUDED_SCHEMAS: system schemas stay out of the default
+  // listing (still reachable via an explicit `schema` param). Single source —
+  // the bridge owns the list, the AI/MCP path reuses it.
+  const MSSQL_SYSTEM_SCHEMAS = mssqlBridge.EXCLUDED_SCHEMAS;
 
   async function sqlSchemaMssql(entry, params) {
     const pool = entry.client.pool;
@@ -220,7 +217,9 @@ function createDatabaseService(deps = {}) {
     const db = entry.client.db;
     const table = params?.table ? String(params.table) : null;
     const databaseName = entry.meta?.database
-      || String(entry.client?.filePath || "database").split("/").pop();
+      // The bridge sets meta.database (path.basename) at connect; the split
+      // fallback mirrors it, handling Windows separators too.
+      || String(entry.client?.filePath || "database").split(/[\\/]/).pop();
     if (!table) {
       // One "database" (the file) acts as the schema for every object, so the
       // listing shape matches the information_schema branches.

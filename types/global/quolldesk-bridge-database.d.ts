@@ -50,17 +50,21 @@ export interface RedisKeyValuePage {
 }
 
 export interface SqlSchemaTree { databases: { name: string; tables: string[]; views: string[] }[] }
-export interface SqlColumnMeta { name: string; type: string; nullable: boolean; key?: string | null; defaultValue?: unknown }
+export interface SqlColumnMeta { name: string; type: string; nullable: boolean; key?: string | null; defaultValue?: unknown; /** Column description (pg col_description / mysql COLUMN_COMMENT / mssql MS_Description); sqlite has none → undefined. */ comment?: string | null }
 export interface SqlIndexMeta { name: string; columns: string[]; unique?: boolean; /** Access method (mysql BTREE/HASH; pg btree/hash/gin/gist/spgist/brin). */ method?: string | null }
 /** Primary key of a table: constraint name plus ordered columns ('PRI' flags land on SqlColumnMeta). */
 export interface SqlPrimaryKeyMeta { name: string | null; columns: string[] }
 /** Foreign key of a table (SqlTableData jump-through): local column → referenced table column. */
 export interface SqlForeignKeyMeta { column: string; refTable: string; refSchema?: string; refColumn: string }
+/** Table-level trigger (read-only v1): timing/event may be empty on engines that do not report them. */
+export interface SqlTriggerMeta { name: string; timing: string; event: string; statement: string }
+export interface SqlSessionInfo { id: string; user: string; app: string; state: string; seconds: number; query: string }
 export interface SqlTableMeta {
   columns: SqlColumnMeta[];
   indexes: SqlIndexMeta[];
   primaryKey: SqlPrimaryKeyMeta | null;
   foreignKeys: SqlForeignKeyMeta[];
+  triggers: SqlTriggerMeta[];
   ddl: string | null;
   rowCountEstimate: number;
 }
@@ -172,6 +176,8 @@ declare global {
     getMysqlTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
     queryMysql?(args: { connectionId: string; sql: string; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
     applyMysqlTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    sessionsMysql?(args: { connectionId: string }): Promise<DbEnvelope<{ sessions: SqlSessionInfo[] }> >;
+    killMysqlSession?(args: { connectionId: string; pid: string; cancel?: boolean }): Promise<DbEnvelope<Record<string, never>>>;
     pickMysqlBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
     pickMysqlRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupMysql?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
@@ -185,6 +191,8 @@ declare global {
     getPgTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
     queryPg?(args: { connectionId: string; sql: string; values?: unknown[] }): Promise<DbEnvelope<SqlQueryResult>>;
     applyPgTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    sessionsPg?(args: { connectionId: string }): Promise<DbEnvelope<{ sessions: SqlSessionInfo[] }> >;
+    killPgSession?(args: { connectionId: string; pid: string; cancel?: boolean }): Promise<DbEnvelope<Record<string, never>>>;
     pickPgBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
     pickPgRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupPg?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
@@ -198,6 +206,8 @@ declare global {
     getMariadbTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
     queryMariadb?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
     applyMariadbTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    sessionsMariadb?(args: { connectionId: string }): Promise<DbEnvelope<{ sessions: SqlSessionInfo[] }> >;
+    killMariadbSession?(args: { connectionId: string; pid: string; cancel?: boolean }): Promise<DbEnvelope<Record<string, never>>>;
     pickMariadbBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
     pickMariadbRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupMariadb?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
@@ -211,6 +221,8 @@ declare global {
     getMssqlTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
     queryMssql?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
     applyMssqlTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    sessionsMssql?(args: { connectionId: string }): Promise<DbEnvelope<{ sessions: SqlSessionInfo[] }> >;
+    killMssqlSession?(args: { connectionId: string; pid: string; cancel?: boolean }): Promise<DbEnvelope<Record<string, never>>>;
     pickMssqlBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
     pickMssqlRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupMssql?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;
@@ -224,6 +236,8 @@ declare global {
     getSqliteTableRows?(args: SqlTableRowsArgs): Promise<DbEnvelope<SqlTableRows>>;
     querySqlite?(args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }): Promise<DbEnvelope<SqlQueryResult>>;
     applySqliteTableChanges?(args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }): Promise<DbEnvelope<{ applied: DbAppliedChanges }>>;
+    sessionsSqlite?(args: { connectionId: string }): Promise<DbEnvelope<{ sessions: SqlSessionInfo[] }> >;
+    killSqliteSession?(args: { connectionId: string; pid: string; cancel?: boolean }): Promise<DbEnvelope<Record<string, never>>>;
     pickSqliteBackupPath?(args: { defaultName?: string }): Promise<DbEnvelope<{ path: string | null }>>;
     pickSqliteRestoreFile?(args?: Record<string, never>): Promise<DbEnvelope<{ path: string | null }>>;
     backupSqlite?(args: DbBackupOptions): Promise<DbEnvelope<{ jobId: string }>>;

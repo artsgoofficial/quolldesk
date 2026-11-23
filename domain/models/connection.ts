@@ -174,6 +174,10 @@ export interface Host {
   id: string;
   label: string;
   hostname: string;
+  /** Accent color for database connection cards (palette hex; database protocols only). */
+  dbColor?: string;
+  /** SQL bootstrap statement(s) executed after a successful database connect (database protocols only). */
+  bootstrapSql?: string;
   port?: number;
   username: string;
   // Optional reference to a reusable identity (username + auth) stored in Keychain.

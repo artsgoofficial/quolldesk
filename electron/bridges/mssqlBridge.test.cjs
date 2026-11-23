@@ -1,4 +1,5 @@
 const test = require("node:test");
+const { waitForPush } = require("./dbCommon/testHelpers.cjs");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -78,6 +79,9 @@ function makeResponder(data = {}) {
     if (lower.includes("information_schema.columns")) return first(data.columns || []);
     if (lower.includes("table_constraints") && lower.includes("primary key")) return first(data.pk || []);
     if (lower.includes("sys.indexes")) return first(data.indexes || []);
+    if (lower.includes("sys.triggers")) return first(data.trgs || []);
+    if (lower.includes("dm_exec_sessions")) return first(data.sessionsList || []);
+    if (lower.startsWith("kill")) return first([]);
     if (lower.includes("sys.sql_modules")) {
       const def = data.ddl ? data.ddl[req.parameters.qualified || ""] : null;
       return first(def ? [{ definition: def }] : []);
@@ -226,20 +230,6 @@ function setup() {
 }
 
 /** Poll the captured job-progress pushes until one with `phase` lands. */
-function waitForPush(pushes, phase, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const tick = () => {
-      const hit = pushes.find((p) => p.phase === phase);
-      if (hit) return resolve(hit);
-      if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
 
 function tmpSqlFile(label) {
   return path.join(os.tmpdir(), `nc-mssql-bridge-test-${label}-${process.pid}-${Math.random().toString(16).slice(2)}.sql`);
@@ -347,8 +337,8 @@ test("tableMeta: columns, PK, indexes (PK index skipped), DDL, FKs, rowCount", a
   const pool = fake.state.pools[0];
   pool.respond = makeResponder({
     columns: [
-      { COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null },
-      { COLUMN_NAME: "name", DATA_TYPE: "nvarchar", IS_NULLABLE: "YES", COLUMN_DEFAULT: null },
+      { COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null, COLUMN_COMMENT: "主键ID" },
+      { COLUMN_NAME: "name", DATA_TYPE: "nvarchar", IS_NULLABLE: "YES", COLUMN_DEFAULT: null, COLUMN_COMMENT: undefined },
     ],
     pk: [{ constraint_name: "PK_users", column_name: "id" }],
     indexes: [
@@ -357,27 +347,41 @@ test("tableMeta: columns, PK, indexes (PK index skipped), DDL, FKs, rowCount", a
     ],
     ddl: { "dbo.users": "CREATE TABLE [dbo].[users] (\n  [id] INT NOT NULL,\n  [name] NVARCHAR(80)\n)" },
     rowCount: 42,
-    fks: [{ name: "FK_users_org", column_name: "org_id", ref_column: "id", ref_table: "orgs", ref_schema: "dbo" }],
+    fks: [{ name: "FK_users_org", column_name: "org_id", ref_column: "id", ref_table: "orgs", ref_schema: "dbo" }], trgs: [{ name: 'trg_audit', timing: 'AFTER', event: 'UPDATE', statement: 'INSERT INTO audit SELECT * FROM inserted' }], sessionsList: [{ session_id: 66, login_name: 'app_login', host_name: 'worker-host', status: 'running', seconds: 45, command: 'SELECT' }],
   });
   const meta = await call("quolldesk:mssql:tableMeta", { connectionId, table: "users", schema: "dbo" });
   assert.equal(meta.ok, true, JSON.stringify(meta));
+  // Column comments (ER panel): MS_Description extended property rides along;
+  // missing → null so the renderer can skip it.
   assert.deepEqual(meta.data.columns, [
-    { name: "id", type: "int", nullable: false, key: "PRI", defaultValue: null },
-    { name: "name", type: "nvarchar", nullable: true, key: null, defaultValue: null },
+    { name: "id", type: "int", nullable: false, key: "PRI", defaultValue: null, comment: "主键ID" },
+    { name: "name", type: "nvarchar", nullable: true, key: null, defaultValue: null, comment: null },
   ]);
   assert.deepEqual(meta.data.primaryKey, { name: "PK_users", columns: ["id"] });
   // The PK-backed index (is_primary_key=1) must be skipped — no duplicate of primaryKey.
   assert.deepEqual(meta.data.indexes, [{ name: "idx_users_name", columns: ["name"], unique: false, method: "NONCLUSTERED" }]);
   assert.match(meta.data.ddl, /^CREATE TABLE \[dbo\]\.\[users\]/);
   assert.deepEqual(meta.data.foreignKeys, [
-    { column: "org_id", refTable: "orgs", refSchema: "dbo", refColumn: "id" },
+    { name: "FK_users_org", columns: ["org_id"], refTable: "orgs", refSchema: "dbo", refColumns: ["id"], onDelete: null, onUpdate: null },
   ]);
+  assert.deepEqual(meta.data.triggers, [
+    { name: "trg_audit", timing: "AFTER", event: "UPDATE", statement: "INSERT INTO audit SELECT * FROM inserted" },
+  ]);
+  const sessions = await call("quolldesk:mssql:sessions", { connectionId });
+  assert.equal(sessions.ok, true, JSON.stringify(sessions));
+  assert.deepEqual(sessions.data.sessions, [
+    { id: "66", user: "app_login", app: "worker-host", state: "running / SELECT", seconds: 45, query: "" },
+  ]);
+  const killed = await call("quolldesk:mssql:killSession", { connectionId, pid: 66 });
+  assert.equal(killed.ok, true, JSON.stringify(killed));
   assert.equal(meta.data.rowCountEstimate, 42);
 
-  // Six queries: columns, PK, indexes, DDL, rowCount, FKs — each parameterized.
+  // Nine queries: columns, PK, indexes, DDL, rowCount, FKs, triggers,
+  // sessions list, kill — each parameterized.
   const sqls = pool.queryLog.map((q) => q.sql);
-  assert.equal(sqls.length, 6);
+  assert.equal(sqls.length, 9);
   assert.match(sqls[0], /INFORMATION_SCHEMA\.COLUMNS/);
+  assert.match(sqls[0], /fn_listextendedproperty/, "columns query must extract the MS_Description comment");
   assert.equal(pool.queryLog[0].parameters.s, "dbo");
   assert.equal(pool.queryLog[0].parameters.t, "users");
   assert.match(sqls[1], /TABLE_CONSTRAINTS/);

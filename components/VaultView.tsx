@@ -236,6 +236,7 @@ interface VaultViewProps {
   knownHosts: KnownHost[];
   managedSources: ManagedSource[];
   sessionCount: number;
+  onlineHostIds: Set<string>;
   hotkeyScheme: HotkeyScheme;
   keyBindings: KeyBinding[];
   terminalThemeId: string;
@@ -328,6 +329,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
   knownHosts,
   managedSources,
   sessionCount,
+  onlineHostIds,
   hotkeyScheme,
   keyBindings,
   terminalThemeId,
@@ -1689,6 +1691,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
           SerialConnectModal,
           SerialHostDetailsPanel,
           sessionCount,
+          onlineHostIds,
           Set,
           setBulkDeleteGroupPaths,
           setCurrentSection,
@@ -1795,6 +1798,7 @@ export const vaultViewAreEqual = (
     // shellHistory / notes / connectionLogs are not VaultView props; those
     // sections subscribe to shellHistoryStore / notesStore / connectionLogsStore.
     prev.sessionCount === next.sessionCount &&
+    prev.onlineHostIds === next.onlineHostIds &&
     prev.managedSources === next.managedSources &&
     prev.groupConfigs === next.groupConfigs &&
     prev.onReadPersistedHosts === next.onReadPersistedHosts &&

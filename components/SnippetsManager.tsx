@@ -37,6 +37,7 @@ import { deleteSelectedSnippetsFromVault } from '../domain/snippetSelection.ts';
 import { DEFAULT_SCRIPT_TEMPLATE, isScriptSnippet } from '../domain/snippetScript.ts';
 import { reorderVaultItems, reorderVaultStrings, sortByVaultOrder } from '../domain/vaultOrder';
 import { Button } from './ui/button';
+import EmptyState from './EmptyState';
 import { ComboboxOption } from './ui/combobox';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from './ui/context-menu';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
@@ -1853,6 +1854,7 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
             </Button>
           </div>
         )}
+        {selectedPackage !== null && (
         <div className="flex items-center gap-2 text-sm font-semibold px-4 py-2">
           <button className="text-primary hover:underline" onClick={() => setSelectedPackage(null)}>{t('snippets.breadcrumb.allPackages')}</button>
           {breadcrumb.map((b) => (
@@ -1862,17 +1864,14 @@ const SnippetsManager: React.FC<SnippetsManagerProps> = ({
             </span>
           ))}
         </div>
+        )}
 
         {!snippets.length && displayedPackages.length === 0 && (
-          <div className="flex-1 flex items-center justify-center px-4">
-            <div className="flex flex-col items-center justify-center text-muted-foreground">
-              <div className="h-16 w-16 rounded-2xl bg-secondary/80 flex items-center justify-center mb-4">
-                <FileCode size={32} className="opacity-60" />
-              </div>
-              <h3 className="text-lg font-semibold text-foreground mb-2">{t('snippets.empty.title')}</h3>
-              <p className="text-sm text-center max-w-sm">{t('snippets.empty.desc')}</p>
-            </div>
-          </div>
+          <EmptyState
+            icon={<FileCode size={30} />}
+            title={t('snippets.empty.title')}
+            hint={t('snippets.empty.desc')}
+          />
         )}
 
         <div

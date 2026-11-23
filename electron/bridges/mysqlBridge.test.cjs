@@ -1,4 +1,5 @@
 const test = require("node:test");
+const { waitForPush } = require("./dbCommon/testHelpers.cjs");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -34,7 +35,10 @@ function makeFakeMysql() {
               emitter.emit("end");
             });
           };
-          if (lower.includes(";") && lower.includes("update")) {
+          if (lower.includes("information_schema.triggers")) {
+            console.error("TRG TOP HIT:", lower.slice(0, 50));
+            emitRows(null, [{ name: "trg_users", timing: "AFTER", event: "INSERT", statement: "UPDATE counts SET n = n + 1" }]);
+          } else if (lower.includes(";") && lower.includes("update")) {
             // SELECT followed by an OK packet: exercises per-segment okPacket capture.
             setImmediate(() => {
               emitter.emit("fields", [{ name: "id" }]);
@@ -68,29 +72,53 @@ function makeFakeMysql() {
             emitRows(null, [{ Tables_in_app: "orders_view", Table_type: "VIEW" }]);
           } else if (lower.startsWith("show create view")) {
             emitRows(null, [{ View: "orders_view", "Create View": "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` VIEW `orders_view` AS SELECT * FROM `users`" }]);
+          } else if (lower.includes("column_comment")) {
+            // tableMeta column comments (ER panel): name-keyed rows off
+            // information_schema.COLUMNS — must route before the generic
+            // `select column_name` branch.
+            emitRows(null, [
+              { name: "id", comment: "主键ID" },
+              { name: "name", comment: "" },
+            ]);
           } else if (lower.startsWith("show columns") || lower.startsWith("select column_name")) {
             emitRows(null, [
               { Field: "id", Type: "int", Null: "NO", Key: "PRI", Default: null },
               { Field: "name", Type: "varchar(80)", Null: "YES", Key: "", Default: null },
             ]);
           } else if (lower.startsWith("show create table")) {
-            // DDL carries two FOREIGN KEY clauses: a plain ref (refSchema must
-            // stay undefined) and a schema-qualified ref (refSchema captured).
+            // DDL carries four FOREIGN KEY clauses: a plain single-column ref,
+            // a schema-qualified ref with actions, a composite two-column ref,
+            // and an anonymous (no CONSTRAINT name) single-column ref.
             emitRows(null, [{ Table: "users", "Create Table": [
               "CREATE TABLE `users` (",
               "  `id` int NOT NULL,",
               "  `parent_id` int DEFAULT NULL,",
               "  `org_id` int DEFAULT NULL,",
+              "  `a` int DEFAULT NULL,",
+              "  `b` int DEFAULT NULL,",
+              "  `region` int DEFAULT NULL,",
               "  PRIMARY KEY (`id`),",
               "  KEY `org_id` (`org_id`),",
               "  CONSTRAINT `users_ibfk_1` FOREIGN KEY (`parent_id`) REFERENCES `user_groups` (`id`),",
-              "  CONSTRAINT `users_ibfk_2` FOREIGN KEY (`org_id`) REFERENCES `other_db`.`orgs` (`oid`)",
+              "  CONSTRAINT `users_ibfk_2` FOREIGN KEY (`org_id`) REFERENCES `other_db`.`orgs` (`oid`) ON DELETE SET NULL ON UPDATE CASCADE,",
+              "  CONSTRAINT `users_comp` FOREIGN KEY (`a`, `b`) REFERENCES `pairs` (`x`, `y`) ON DELETE CASCADE,",
+              "  FOREIGN KEY (`region`) REFERENCES `regions` (`id`)",
               ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             ].join("\n") }]);
           } else if (lower.startsWith("show index") || lower.startsWith("select index_name")) {
             emitRows(null, [{ Key_name: "PRIMARY", Column_name: "id", Non_unique: 0, Index_type: "BTREE" }]);
           } else if (lower.includes("table_rows")) {
             emitRows(null, [{ c: 42 }]);
+          } else if (lower.startsWith("show processlist")) {
+            emitRows(null, [{ Id: 55, User: "app", Host: "10.0.0.9:51000", Command: "Query", Time: 30, State: "Sending data", Info: "SELECT COUNT(*) FROM big" }]);
+          } else if (lower.startsWith("kill")) {
+            setImmediate(() => {
+              emitter.emit("result", { affectedRows: 1 });
+              emitter.emit("end");
+            });
+          } else if (false) {
+            console.error("TRG FULL:", lower);
+            emitRows(null, []);
           } else if (lower.includes("version()")) {
             emitRows([{ name: "v" }], [{ v: "8.0.36" }]);
           } else if (lower.startsWith("select") || lower.startsWith("with")) {
@@ -121,20 +149,6 @@ function setup() {
 
 /** Poll the captured job-progress pushes until one with `phase` lands
  *  (optionally only at or after index `since` — the array is live). */
-function waitForPush(pushes, phase, timeoutMs = 3000, since = 0) {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const tick = () => {
-      const hit = pushes.find((p, i) => i >= since && p.phase === phase);
-      if (hit) return resolve(hit);
-      if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
 
 function tmpSqlFile(label) {
   return path.join(os.tmpdir(), `nc-mysql-bridge-test-${label}-${process.pid}-${Math.random().toString(16).slice(2)}.sql`);
@@ -159,14 +173,32 @@ test("connect, schemaTree, tableMeta, tableRows, query", async () => {
   const meta = await call("quolldesk:mysql:tableMeta", { connectionId, table: "users" });
   assert.equal(meta.ok, true);
   assert.equal(meta.data.columns[0].name, "id");
+  // Column comments (ER panel): COLUMN_COMMENT joins in by column name;
+  // empty string → null so the renderer can skip it.
+  assert.equal(meta.data.columns[0].comment, "主键ID", "COLUMN_COMMENT must surface in tableMeta");
+  assert.equal(meta.data.columns[1].comment, null, "empty comment must normalize to null");
   assert.equal(meta.data.indexes[0].name, "PRIMARY");
   assert.equal(meta.data.indexes[0].method, "BTREE");
   assert.equal(meta.data.rowCountEstimate, 42);
   assert.ok(meta.data.ddl.includes("CREATE TABLE"));
   assert.deepEqual(meta.data.foreignKeys, [
-    { column: "parent_id", refTable: "user_groups", refColumn: "id" },
-    { column: "org_id", refTable: "orgs", refSchema: "other_db", refColumn: "oid" },
+    { name: "users_ibfk_1", columns: ["parent_id"], refTable: "user_groups", refSchema: null, refColumns: ["id"], onDelete: null, onUpdate: null },
+    { name: "users_ibfk_2", columns: ["org_id"], refTable: "orgs", refSchema: "other_db", refColumns: ["oid"], onDelete: "SET NULL", onUpdate: "CASCADE" },
+    { name: "users_comp", columns: ["a", "b"], refTable: "pairs", refSchema: null, refColumns: ["x", "y"], onDelete: "CASCADE", onUpdate: null },
+    { name: null, columns: ["region"], refTable: "regions", refSchema: null, refColumns: ["id"], onDelete: null, onUpdate: null },
   ]);
+  console.error("DEBUG meta.data:", JSON.stringify({ triggers: meta.data.triggers, processlistLike: meta.data.triggers?.length }));
+  assert.deepEqual(meta.data.triggers, [
+    { name: "trg_users", timing: "AFTER", event: "INSERT", statement: "UPDATE counts SET n = n + 1" },
+  ]);
+
+  const sessions = await call("quolldesk:mysql:sessions", { connectionId });
+  assert.equal(sessions.ok, true, JSON.stringify(sessions));
+  assert.deepEqual(sessions.data.sessions, [
+    { id: "55", user: "app", app: "10.0.0.9:51000", state: "Query / Sending data", seconds: 30, query: "SELECT COUNT(*) FROM big" },
+  ]);
+  const killed = await call("quolldesk:mysql:killSession", { connectionId, pid: 55 });
+  assert.equal(killed.ok, true, JSON.stringify(killed));
 
   const rows = await call("quolldesk:mysql:tableRows", { connectionId, table: "users", offset: 0, limit: 100 });
   assert.equal(rows.ok, true);

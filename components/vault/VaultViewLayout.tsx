@@ -304,6 +304,7 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
     SerialConnectModal,
     SerialHostDetailsPanel,
     sessionCount,
+    onlineHostIds,
     Set,
     setBulkDeleteGroupPaths,
     setCurrentSection,
@@ -1380,6 +1381,7 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
                 selectedHostIds,
                 selectedTags,
                 sessionCount,
+                onlineHostIds,
                 setDeleteTargetPath,
                 setDragOverDropTarget,
                 setGroupDragOverDropTarget,
@@ -1576,6 +1578,7 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
                     hosts={hosts}
                     onUpdateHosts={onUpdateHosts}
                     onConnect={onConnect}
+                    onImportClick={() => setIsImportOpen(true)}
                   />
                 </Suspense>
               </LazyLoadBoundary>
@@ -1587,6 +1590,7 @@ export function VaultViewLayout({ ctx }: { ctx: VaultViewLayoutContext }) {
                     hosts={hosts}
                     onUpdateHosts={onUpdateHosts}
                     onConnect={onConnect}
+                    onImportClick={() => setIsImportOpen(true)}
                   />
                 </Suspense>
               </LazyLoadBoundary>

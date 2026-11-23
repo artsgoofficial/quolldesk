@@ -1,4 +1,5 @@
 import { Host, HostChainConfig, HostProtocol } from "./models";
+import { DB_DEFAULT_PORTS, normalizeRedisConfig, normalizeSqlConfig, type DbProtocol } from "./models/database";
 import { isEncryptedCredentialPlaceholder } from "./credentials";
 import { sanitizeHost } from "./host";
 import { hasMacKeychainAgentDirectives } from "./sshAuth";
@@ -16,6 +17,7 @@ export {
 import { parseQuickConnectInput } from "./quickConnect";
 import { canServeAsSshJumpHost } from "./terminalProtocol";
 import { findExactHeaderIndex, findHeaderIndex, parseCsv } from "./vaultImport/csvUtils";
+import { decodeHtmlEntities } from "./htmlEntities";
 import { decodeCsvKeyPath, decodeCsvLocalShell, decodeCsvPassphrase, decodeCsvProxyJump } from "./vaultImport/csvCredentialFields";
 import { isCsvDirectProxyValue, parseCsvProxy } from "./vaultImport/csvProxy";
 import { attachMobaXtermPasswords } from "./vaultImport/mobaXtermPasswords";
@@ -130,7 +132,10 @@ export type VaultImportFormat =
   | "csv"
   | "securecrt"
   | "finalshell"
-  | "ssh_config";
+  | "ssh_config"
+  | "xshell"
+  | "dbeaver"
+  | "navicat";
 
 export const VAULT_IMPORT_FORMATS: VaultImportFormat[] = [
   "csv",
@@ -139,7 +144,38 @@ export const VAULT_IMPORT_FORMATS: VaultImportFormat[] = [
   "securecrt",
   "finalshell",
   "ssh_config",
+  "xshell",
+  "dbeaver",
+  "navicat",
 ];
+
+/**
+ * Formats whose source is a whole folder of per-session files handled as one
+ * batch: multi-select pickers, tolerant per-file errors, profile preservation.
+ * One set for every call site that branches on "is this a batch folder format"
+ * — adding a format means adding it here, not hunting five spellings.
+ */
+export const BATCH_FOLDER_FORMATS: ReadonlySet<VaultImportFormat> = new Set([
+  "securecrt",
+  "finalshell",
+  "xshell",
+]);
+
+export const isBatchFolderFormat = (format: VaultImportFormat): boolean =>
+  BATCH_FOLDER_FORMATS.has(format);
+
+/** Display label per import format (progress toasts, pickers). */
+export const VAULT_IMPORT_FORMAT_LABELS: Record<VaultImportFormat, string> = {
+  putty: "PuTTY",
+  mobaxterm: "MobaXterm",
+  csv: "CSV",
+  securecrt: "SecureCRT",
+  finalshell: "FinalShell",
+  ssh_config: "ssh_config",
+  xshell: "Xshell",
+  dbeaver: "DBeaver",
+  navicat: "Navicat",
+};
 
 type VaultImportIssueLevel = "warning" | "error";
 
@@ -1437,6 +1473,354 @@ const importFromSecureCrt = (text: string, fileName?: string): VaultImportResult
   };
 };
 
+const importFromXshell = (text: string, fileName?: string): VaultImportResult => {
+  const issues: VaultImportIssue[] = [];
+
+  // .xsh files are INI-like: `[Connection]`, nested `[Connection\Authentication]`,
+  // plain `Key=Value` lines. Lookups stay case-insensitive across Xshell versions.
+  const sections = new Map<string, Map<string, string>>();
+  let section = "";
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      section = trimmed.slice(1, -1).trim().toLowerCase();
+      continue;
+    }
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    let bucket = sections.get(section);
+    if (!bucket) {
+      bucket = new Map();
+      sections.set(section, bucket);
+    }
+    const key = trimmed.slice(0, eq).trim().toLowerCase();
+    if (!bucket.has(key)) bucket.set(key, trimmed.slice(eq + 1).trim());
+  }
+
+  const valueOf = (sectionName: string, key: string): string | undefined => {
+    const value = sections.get(sectionName.toLowerCase())?.get(key.toLowerCase());
+    return value || undefined;
+  };
+
+  const skippedResult = (message: string): VaultImportResult => ({
+    hosts: [],
+    groups: [],
+    issues: [{ level: "warning", message }],
+    stats: { parsed: 1, imported: 0, skipped: 1, duplicates: 0 },
+  });
+
+  const hostname = valueOf("connection", "host");
+  if (!hostname) return skippedResult("Xshell session: missing host.");
+
+  const protocolRaw = (valueOf("connection", "protocol") ?? "ssh").trim();
+  const protocol = normalizeProtocol(protocolRaw);
+  if (protocol !== "ssh" && protocol !== "telnet") {
+    return skippedResult(`Xshell session: unsupported protocol "${protocolRaw}".`);
+  }
+
+  // Passwords in .xsh files are encrypted with Xshell's own scheme and never
+  // imported; users re-enter credentials on first connect.
+  const authSection = "connection\\authentication";
+  const username = valueOf(authSection, "username")
+    ?? valueOf("connection", "username")
+    ?? valueOf("connection", "user");
+  const userKey = valueOf(authSection, "userkey");
+  if (userKey) {
+    issues.push({
+      level: "warning",
+      message: `Xshell user key "${userKey}" stays inside Xshell's key manager; add the key in QuollDesk and select it for this host.`,
+    });
+  }
+
+  const host = createHost({
+    label: fileName?.replace(/\.[^.]+$/, "") || "Xshell Session",
+    hostname,
+    username,
+    port: parsePort(valueOf("connection", "port")) ?? (protocol === "ssh" ? DEFAULT_SSH_PORT : 23),
+    protocol,
+    notes: valueOf("connection", "description"),
+  });
+  return {
+    hosts: [host],
+    groups: [],
+    issues,
+    stats: { parsed: 1, imported: 1, skipped: 0, duplicates: 0 },
+  };
+};
+
+// ——— Database tool imports (DBeaver connections.xml / Navicat .ncx). ———
+// Parsed in the import web worker where DOMParser is unavailable, so targeted
+// forgiving extractors handle the two shapes instead of a full XML parser.
+// Passwords are never imported: Navicat 12+ encryption is machine-bound and
+// DBeaver keeps credentials in a separate encrypted store — users re-enter
+// credentials on first connect.
+
+// XML attribute/element text decoding uses the shared domain/htmlEntities
+// decoder (same named-entity set plus &apos;, numeric references with a
+// code-point guard, &amp; last).
+const decodeXmlText = decodeHtmlEntities;
+
+const parseXmlAttributeList = (tagBody: string): Record<string, string> => {
+  const attrs: Record<string, string> = {};
+  const attrRe = /([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  for (let match = attrRe.exec(tagBody); match; match = attrRe.exec(tagBody)) {
+    attrs[match[1].toLowerCase()] = decodeXmlText(match[2] ?? match[3] ?? "");
+  }
+  return attrs;
+};
+
+const extractXmlElementBlocks = (
+  text: string,
+  tagName: string,
+): Array<{ attributes: Record<string, string>; body: string }> => {
+  const blocks: Array<{ attributes: Record<string, string>; body: string }> = [];
+  const openRe = new RegExp(`<${tagName}(?:\\s[^>]*)?>`, "gi");
+  const lowerText = text.toLowerCase();
+  const closeTag = `</${tagName.toLowerCase()}>`;
+  for (let match = openRe.exec(text); match; match = openRe.exec(text)) {
+    if (match[0].endsWith("/>")) {
+      // Self-closing element: attributes only, no body to scan.
+      blocks.push({ attributes: parseXmlAttributeList(match[0]), body: "" });
+      continue;
+    }
+    const bodyStart = match.index + match[0].length;
+    const closeIndex = lowerText.indexOf(closeTag, bodyStart);
+    if (closeIndex === -1) continue;
+    blocks.push({
+      attributes: parseXmlAttributeList(match[0]),
+      body: text.slice(bodyStart, closeIndex),
+    });
+  }
+  return blocks;
+};
+
+const firstXmlElementText = (body: string, tagName: string): string | undefined => {
+  const match = body.match(new RegExp(`<(?:\\w+:)?${tagName}(?:\\s[^>]*)?>([^<]*)<`, "i"));
+  const value = match?.[1]?.trim();
+  return value ? decodeXmlText(value) : undefined;
+};
+
+// DBeaver stores connection settings as either <property name="x">v</property>
+// or <entry key="x">v</entry> depending on version.
+const extractXmlPropertyMap = (body: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  const entryRe = /<(?:\w+:)?(?:property|entry)\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?(?:property|entry)>/gi;
+  for (let match = entryRe.exec(body); match; match = entryRe.exec(body)) {
+    const attrs = parseXmlAttributeList(match[1]);
+    const key = attrs.name ?? attrs.key;
+    if (!key) continue;
+    const value = match[2].trim();
+    out[key.toLowerCase()] = value ? decodeXmlText(value) : "";
+  }
+  return out;
+};
+
+const pickDbXmlAttribute = (
+  attrs: Record<string, string>,
+  keys: string[],
+): string | undefined => {
+  for (const key of keys) {
+    const value = attrs[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+};
+
+const DBEAVER_PROVIDER_ENGINES: Record<string, DbProtocol> = {
+  postgresql: "postgresql",
+  mysql: "mysql",
+  mariadb: "mariadb",
+  sqlite: "sqlite",
+  sqlserver: "mssql",
+  redis: "redis",
+};
+
+const NAVICAT_TYPE_ENGINES: Record<string, DbProtocol> = {
+  mysql: "mysql",
+  mariadb: "mariadb",
+  postgresql: "postgresql",
+  mssql: "mssql",
+  sqlserver: "mssql",
+  sqlite: "sqlite",
+  redis: "redis",
+};
+
+const resolveDbEngine = (
+  raw: string | undefined,
+  table: Record<string, DbProtocol>,
+): DbProtocol | undefined => {
+  const value = raw?.trim().toLowerCase();
+  return value ? table[value] : undefined;
+};
+
+// DBeaver omits provider on some datasources; the driver id carries the engine.
+const resolveDbEngineFromDriver = (driver: string | undefined): DbProtocol | undefined => {
+  const value = driver?.trim().toLowerCase() ?? "";
+  if (value.startsWith("postgres")) return "postgresql";
+  if (value.startsWith("mysql")) return "mysql";
+  if (value.startsWith("mariadb")) return "mariadb";
+  if (value.startsWith("sqlite")) return "sqlite";
+  if (value.startsWith("sqlserver") || value.startsWith("mssql")) return "mssql";
+  if (value.startsWith("redis")) return "redis";
+  return undefined;
+};
+
+// Database connections are plain Hosts with a db protocol — build them like
+// the manual create form does (buildSqlHostPayload / RedisHostDetailsPanel)
+// instead of going through createHost, whose draft pipeline only accepts
+// ssh/telnet/local protocols.
+const createDbImportHost = (input: {
+  label?: string;
+  engine: DbProtocol;
+  hostname: string;
+  port?: number;
+  username?: string;
+  database?: string;
+  filePath?: string;
+  notes?: string;
+}): Host => {
+  const host: Host = {
+    id: crypto.randomUUID(),
+    tags: [],
+    os: "linux",
+    protocol: input.engine,
+    label: input.label?.trim() || input.hostname,
+    hostname: input.hostname,
+    notes: input.notes,
+    username: input.username,
+  };
+  if (input.engine === "sqlite") {
+    // File-backed engines connect to a path, not host:port — matching
+    // buildSqlHostPayload, which omits port entirely for SQLite.
+    host.sqlConfig = normalizeSqlConfig({ filePath: input.filePath });
+  } else if (input.engine === "redis") {
+    host.redisConfig = normalizeRedisConfig({ redisUsername: input.username || undefined });
+  } else {
+    host.port = input.port ?? DB_DEFAULT_PORTS[input.engine] ?? 22;
+    host.sqlConfig = normalizeSqlConfig({ database: input.database });
+  }
+  return host;
+};
+
+const importFromDbeaver = (text: string): VaultImportResult => {
+  const issues: VaultImportIssue[] = [];
+  const parsedHosts: Host[] = [];
+  let parsed = 0;
+  let skipped = 0;
+
+  for (const { attributes, body } of extractXmlElementBlocks(text, "datasource")) {
+    const label = firstXmlElementText(body, "name") ?? firstXmlElementText(body, "nickname");
+    const engine = resolveDbEngine(attributes.provider, DBEAVER_PROVIDER_ENGINES)
+      ?? resolveDbEngineFromDriver(attributes.driver);
+    if (!engine) {
+      parsed++;
+      skipped++;
+      issues.push({
+        level: "warning",
+        message: `DBeaver connection "${label ?? attributes.id ?? "?"}": unsupported provider${attributes.provider ? ` "${attributes.provider}"` : ""}.`,
+      });
+      continue;
+    }
+
+    const properties = extractXmlPropertyMap(body);
+    const isFileEngine = engine === "sqlite";
+    const hostname = isFileEngine
+      ? pickDbXmlAttribute(properties, ["database", "path"])
+      : pickDbXmlAttribute(properties, ["host", "server", "ip", "endpoint"]);
+    if (!hostname) {
+      skipped++;
+      issues.push({
+        level: "warning",
+        message: `DBeaver connection "${label ?? attributes.id ?? "?"}": missing host.`,
+      });
+      continue;
+    }
+
+    parsed++;
+    parsedHosts.push(createDbImportHost({
+      label,
+      engine,
+      hostname,
+      port: parsePort(pickDbXmlAttribute(properties, ["port"])),
+      username: pickDbXmlAttribute(properties, ["user", "username", "user_name"]),
+      database: isFileEngine ? undefined : pickDbXmlAttribute(properties, ["database", "db"]),
+      filePath: isFileEngine ? hostname : undefined,
+      notes: firstXmlElementText(body, "notes"),
+    }));
+  }
+
+  if (parsed === 0 && skipped === 0) {
+    issues.push({ level: "warning", message: "DBeaver file: no <datasource> connections found." });
+    skipped = 1;
+  }
+
+  const { hosts, duplicates } = dedupeHosts(parsedHosts);
+  return {
+    hosts,
+    groups: [],
+    issues,
+    stats: { parsed, imported: hosts.length, skipped, duplicates },
+  };
+};
+
+const importFromNavicat = (text: string): VaultImportResult => {
+  const issues: VaultImportIssue[] = [];
+  const parsedHosts: Host[] = [];
+  let parsed = 0;
+  let skipped = 0;
+
+  for (const { attributes } of extractXmlElementBlocks(text, "Connection")) {
+    const engine = resolveDbEngine(attributes.connectiontype, NAVICAT_TYPE_ENGINES);
+    if (!engine) {
+      parsed++;
+      skipped++;
+      issues.push({
+        level: "warning",
+        message: `Navicat connection "${attributes.connname ?? "?"}": unsupported type${attributes.connectiontype ? ` "${attributes.connectiontype}"` : ""}.`,
+      });
+      continue;
+    }
+
+    const isFileEngine = engine === "sqlite";
+    const hostname = isFileEngine
+      ? attributes.database ?? attributes.host
+      : attributes.host ?? attributes.server;
+    if (!hostname) {
+      skipped++;
+      issues.push({
+        level: "warning",
+        message: `Navicat connection "${attributes.connname ?? "?"}": missing host.`,
+      });
+      continue;
+    }
+
+    parsed++;
+    parsedHosts.push(createDbImportHost({
+      label: attributes.connname,
+      engine,
+      hostname,
+      port: parsePort(attributes.port),
+      username: attributes.username ?? attributes.user,
+      database: isFileEngine ? undefined : attributes.database,
+      filePath: isFileEngine ? hostname : undefined,
+    }));
+  }
+
+  if (parsed === 0 && skipped === 0) {
+    issues.push({ level: "warning", message: "Navicat file: no <Connection> entries found." });
+    skipped = 1;
+  }
+
+  const { hosts, duplicates } = dedupeHosts(parsedHosts);
+  return {
+    hosts,
+    groups: [],
+    issues,
+    stats: { parsed, imported: hosts.length, skipped, duplicates },
+  };
+};
+
 const importFromMobaXterm = (
   text: string,
   options?: { masterPassword?: string },
@@ -1663,6 +2047,12 @@ export const importVaultHostsFromText = (
       return importFromFinalShell(input);
     case "mobaxterm":
       return importFromMobaXterm(input, options);
+    case "xshell":
+      return importFromXshell(input, options?.fileName);
+    case "dbeaver":
+      return importFromDbeaver(input);
+    case "navicat":
+      return importFromNavicat(input);
     default: {
       const _exhaustive: never = format;
       return _exhaustive;
@@ -1700,6 +2090,18 @@ export function detectVaultImportFormat(text: string): VaultImportFormat | null 
 
   if (/S:"Hostname"/m.test(input) && (/S:"Username"/m.test(input) || /D:"\[Sessions\]/i.test(input))) {
     return "securecrt";
+  }
+
+  if (/^\[Connection(?:\\[^\]\r\n]*)?\]\s*$/im.test(input) && /^Host\s*=/im.test(input) && /^Protocol\s*=/im.test(input)) {
+    return "xshell";
+  }
+
+  if (/<datasource\b[^>]*\bprovider\s*=\s*"[^"]+"/i.test(input) && /<provider-properties\b/i.test(input)) {
+    return "dbeaver";
+  }
+
+  if (/<Connection\b[^>]*\bConnectionType\s*=\s*"/i.test(input)) {
+    return "navicat";
   }
 
   try {

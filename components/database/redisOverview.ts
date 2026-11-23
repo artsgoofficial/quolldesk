@@ -64,3 +64,46 @@ export const formatDurationMs = (ms: number | null): string | null => {
   if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ''}`;
   return `${seconds}s`;
 };
+
+/** Sample window for the ops-per-second sparkline (5s sampling → ~5 minutes). */
+export const OPS_SAMPLE_CAPACITY = 60;
+
+/**
+ * Append one ops-per-sec sample to the rolling history. Null/absent samples
+ * are dropped (a hole would read as a false dip to zero); non-finite values
+ * are clamped to 0. Always returns a new array — the panel keeps it in state.
+ */
+export const pushOpsSample = (
+  history: number[],
+  opsPerSec: number | null | undefined,
+  capacity: number = OPS_SAMPLE_CAPACITY,
+): number[] => {
+  if (opsPerSec == null || !Number.isFinite(opsPerSec)) return history;
+  const next = [...history, Math.max(0, opsPerSec)];
+  return next.length > capacity ? next.slice(next.length - capacity) : next;
+};
+
+/**
+ * SVG polyline points ("x,y x,y …") for the ops history. The last sample is
+ * the freshest and sits at the right edge. Fewer than two finite samples
+ * yield a flat baseline so the chart never renders an empty polyline.
+ */
+export const opsSparklinePoints = (
+  history: number[],
+  width: number,
+  height: number,
+): string => {
+  const pad = 2;
+  const values = history.filter((v) => Number.isFinite(v));
+  // Fewer than two points cannot form a line — render the flat baseline.
+  if (values.length < 2) return `0,${height - pad} ${width},${height - pad}`;
+  const max = Math.max(...values, 1);
+  const stepX = width / (values.length - 1);
+  return values
+    .map((v, i) => {
+      const x = Math.round(i * stepX * 100) / 100;
+      const y = height - pad - (v / max) * (height - pad * 2);
+      return `${x},${Math.round(y * 100) / 100}`;
+    })
+    .join(' ');
+};

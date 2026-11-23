@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatDurationMs, parseKeyspace, redisHitRate } from './redisOverview';
+import {
+  formatDurationMs,
+  parseKeyspace,
+  redisHitRate,
+  OPS_SAMPLE_CAPACITY,
+  pushOpsSample,
+  opsSparklinePoints,
+} from './redisOverview';
 
 test('parseKeyspace extracts keys, expires and avg TTL from the dbN INFO entry', () => {
   // INFO keyspace lines are "db0:keys=...,expires=...,avg_ttl=..." so the
@@ -43,4 +50,29 @@ test('formatDurationMs returns null for absent or zero values', () => {
   assert.equal(formatDurationMs(0), null);
   assert.equal(formatDurationMs(null), null);
   assert.equal(formatDurationMs(Number.NaN), null);
+});
+
+test('pushOpsSample drops non-finite samples and caps the window', () => {
+  assert.deepEqual(pushOpsSample([], null), []);
+  assert.deepEqual(pushOpsSample([], Number.NaN), []);
+  assert.deepEqual(pushOpsSample([], 12), [12]);
+  let h: number[] = [];
+  for (let i = 0; i < OPS_SAMPLE_CAPACITY + 5; i++) h = pushOpsSample(h, i);
+  assert.equal(h.length, OPS_SAMPLE_CAPACITY);
+  assert.equal(h[h.length - 1], OPS_SAMPLE_CAPACITY + 4);
+});
+
+test('opsSparklinePoints maps the newest sample to the right edge', () => {
+  const flat = opsSparklinePoints([], 100, 24);
+  assert.match(flat, /0,22 100,22/);
+  const pts = opsSparklinePoints([0, 50, 100], 100, 24);
+  const parts = pts.split(' ');
+  assert.equal(parts.length, 3);
+  // first point pinned left, last pinned right
+  assert.ok(parts[0].startsWith('0,'));
+  assert.ok(parts[2].startsWith('100,'));
+  // peak is higher (smaller y) than valley
+  const yValley = Number(parts[0].split(',')[1]);
+  const yPeak = Number(parts[2].split(',')[1]);
+  assert.ok(yPeak < yValley);
 });

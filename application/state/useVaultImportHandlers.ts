@@ -31,9 +31,11 @@ import {
   buildVaultHostEndpointKey,
   buildVaultHostMergeKey,
   filterVaultImportKeyPassphrasesAgainstExisting,
+  isBatchFolderFormat,
   mergeVaultImportIssues,
   resolveVaultImportKeyPassphraseConflicts,
   toVaultImportExistingHostRef,
+  VAULT_IMPORT_FORMAT_LABELS,
   type VaultImportFormat,
 } from "../../domain/vaultImport";
 import type { GroupConfig, Host, ManagedSource, SSHKey } from "../../types";
@@ -112,7 +114,7 @@ export function useVaultImportHandlers({
 
   const handleImportFileSelected = useCallback(
       async (format: VaultImportFormat, files: File[], options?: VaultImportOptions) => {
-        const preserveProfiles = format === "securecrt" || format === "finalshell";
+        const preserveProfiles = isBatchFolderFormat(format);
         const file = files[0];
         if (!file) return;
         if (importInFlightRef.current) return;
@@ -134,18 +136,7 @@ export function useVaultImportHandlers({
         let rollbackPendingImport: () => Promise<void> = async () => undefined;
         const relativeRoot = file.webkitRelativePath?.split(/[\\/]+/).filter(Boolean)[0];
         const selectionName = files.length > 1 ? (relativeRoot || file.name) : file.name;
-        const formatLabel =
-          format === "putty"
-            ? "PuTTY"
-            : format === "mobaxterm"
-              ? "MobaXterm"
-              : format === "csv"
-                ? "CSV"
-                : format === "securecrt"
-                  ? "SecureCRT"
-                  : format === "finalshell"
-                    ? "FinalShell"
-                    : "ssh_config";
+        const formatLabel = VAULT_IMPORT_FORMAT_LABELS[format] ?? "ssh_config";
         const updateProgress = (next: Partial<VaultImportProgress>) => {
           setImportProgress((current) => ({
             status: "running",

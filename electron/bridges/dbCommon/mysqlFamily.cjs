@@ -12,7 +12,7 @@ const fs = require("node:fs");
 const registry = require("./connectionRegistry.cjs");
 const { openDbTunnel } = require("./tunnel.cjs");
 const {
-  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue,
+  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue, buildTriggerMetas,
 } = require("./resultEnvelope.cjs");
 const {
   createDumpWriter, sqlLiteral, escapeSqlString, buildInsertStatements,
@@ -85,8 +85,24 @@ function createMysqlFamilyBridge({ channel, dialect }) {
   // FK metadata (SqlTableData jump-through): SHOW CREATE TABLE renders foreign
   // keys as CONSTRAINT `name` FOREIGN KEY (`col`) REFERENCES `schema`.`table`
   // (`col`). Schema-qualified refs capture refSchema; plain refs leave it
-  // undefined. Global flag regex — reset lastIndex before each scan.
-  const FK_PATTERN = /FOREIGN KEY\s*\(`([^`]+)`\)\s*REFERENCES\s*(?:`([^`]+)`\.)?`([^`]+)`\s*\(`([^`]+)`\)/g;
+  // undefined. Global flag regex — reset lastIndex before each scan. Handles
+  // named and anonymous constraints, composite column lists, schema-qualified
+  // refs, and ON DELETE / ON UPDATE actions (canonical upper-case values,
+  // null when the clause is absent).
+  const FK_ACTIONS = "(CASCADE|RESTRICT|SET NULL|SET DEFAULT|NO ACTION)";
+  const FK_PATTERN = new RegExp(
+    "(?:CONSTRAINT\\s+`([^`]+)`\\s+)?FOREIGN KEY\\s*\\(([^)]*)\\)\\s*REFERENCES\\s*(?:`([^`]+)`\\.)?`([^`]+)`\\s*\\(([^)]*)\\)"
+    + "(?:\\s+ON DELETE\\s+" + FK_ACTIONS + ")?(?:\\s+ON UPDATE\\s+" + FK_ACTIONS + ")?",
+    "g",
+  );
+
+  function backtickList(raw) {
+    const names = [];
+    const listRe = /`([^`]+)`/g;
+    let m;
+    while ((m = listRe.exec(raw)) !== null) names.push(m[1]);
+    return names;
+  }
 
   function parseForeignKeys(ddl) {
     const fks = [];
@@ -94,9 +110,15 @@ function createMysqlFamilyBridge({ channel, dialect }) {
     FK_PATTERN.lastIndex = 0;
     let match;
     while ((match = FK_PATTERN.exec(ddl)) !== null) {
-      const fk = { column: match[1], refTable: match[3], refColumn: match[4] };
-      if (match[2]) fk.refSchema = match[2];
-      fks.push(fk);
+      fks.push({
+        name: match[1] || null,
+        columns: backtickList(match[2]),
+        refTable: match[4],
+        refSchema: match[3] || null,
+        refColumns: backtickList(match[5]),
+        onDelete: match[6] || null,
+        onUpdate: match[7] || null,
+      });
     }
     return fks;
   }
@@ -279,6 +301,15 @@ function createMysqlFamilyBridge({ channel, dialect }) {
           }
           await push({ phase: "rows", table: entry.name, rowsDone });
         }
+        // Triggers AFTER the table's data so INSERTs during restore do not fire them
+        // (mysqldump semantics). Definition rebuilt from information_schema.
+        const [trgSeg] = await runQuery(conn,
+          `SELECT TRIGGER_NAME AS name, ACTION_TIMING AS timing, EVENT_MANIPULATION AS event, ACTION_STATEMENT AS statement FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = '${escapeSqlString(entry.name, { escapeBackslash: true })}'`,
+          DEFAULT_QUERY_TIMEOUT_MS);
+        for (const trg of trgSeg.rows) {
+          await writer.write(`CREATE TRIGGER ${q(trg.name)} ${trg.timing} ${trg.event} ON ${q(entry.name)} FOR EACH ROW ${trg.statement};\n`);
+        }
+        await writer.write("\n");
         tablesDone += 1;
       }
 
@@ -413,13 +444,24 @@ function createMysqlFamilyBridge({ channel, dialect }) {
         ? ` WHERE TABLE_SCHEMA = '${escapeSqlString(schema, { escapeBackslash: true })}' AND TABLE_NAME = '${escapeSqlString(table, { escapeBackslash: true })}'`
         : ` WHERE TABLE_NAME = '${escapeSqlString(table, { escapeBackslash: true })}'`;
       try {
-        const [columns, indexes, ddl, count] = await Promise.all([
+        const triggerWhere = schema
+          ? ` WHERE TRIGGER_SCHEMA = '${escapeSqlString(schema, { escapeBackslash: true })}' AND EVENT_OBJECT_TABLE = '${escapeSqlString(table, { escapeBackslash: true })}'`
+          : ` WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = '${escapeSqlString(table, { escapeBackslash: true })}'`;
+        const [columns, indexes, ddl, count, triggerRows, colComments] = await Promise.all([
           runQuery(entry.client.conn, `SHOW COLUMNS FROM ${db ? db + "." : ""}${tbl}`, DEFAULT_QUERY_TIMEOUT_MS),
           runQuery(entry.client.conn, `SHOW INDEX FROM ${db ? db + "." : ""}${tbl}`, DEFAULT_QUERY_TIMEOUT_MS),
           runQuery(entry.client.conn, `SHOW CREATE TABLE ${db ? db + "." : ""}${tbl}`, DEFAULT_QUERY_TIMEOUT_MS),
           runQuery(entry.client.conn,
             `SELECT TABLE_ROWS AS c FROM information_schema.TABLES${where}`, DEFAULT_QUERY_TIMEOUT_MS),
+          runQuery(entry.client.conn,
+            `SELECT TRIGGER_NAME AS name, ACTION_TIMING AS timing, EVENT_MANIPULATION AS event, ACTION_STATEMENT AS statement FROM information_schema.TRIGGERS${triggerWhere} ORDER BY TRIGGER_NAME`, DEFAULT_QUERY_TIMEOUT_MS),
+          // Column comments (ER panel): SHOW COLUMNS has no comment column, so
+          // join it in by name from information_schema (same where-shape as the
+          // TABLES estimate query above).
+          runQuery(entry.client.conn,
+            `SELECT COLUMN_NAME AS name, COLUMN_COMMENT AS comment FROM information_schema.COLUMNS${where} ORDER BY ORDINAL_POSITION`, DEFAULT_QUERY_TIMEOUT_MS),
         ]);
+        const commentByName = new Map((colComments[0].rows || []).map((r) => [r.name, r.comment || null]));
         const seen = new Map();
         for (const row of indexes[0].rows) {
           const name = row.Key_name;
@@ -435,11 +477,13 @@ function createMysqlFamilyBridge({ channel, dialect }) {
         return okEnvelope({
           columns: columns[0].rows.map((c) => ({
             name: c.Field, type: c.Type, nullable: c.Null === "YES", key: c.Key || null, defaultValue: c.Default,
+            comment: commentByName.get(c.Field) ?? null,
           })),
           indexes: [...seen.values()],
           primaryKey: pkCols.length > 0 ? { name: "PRIMARY", columns: pkCols } : null,
           ddl: ddlText,
           foreignKeys: parseForeignKeys(ddlText),
+          triggers: buildTriggerMetas(triggerRows[0].rows),
           rowCountEstimate: Number(count[0].rows[0]?.c ?? 0),
         });
       } catch (err) {
@@ -530,6 +574,40 @@ function createMysqlFamilyBridge({ channel, dialect }) {
     });
 
     // ---- Backup / restore (Wave 6) ----
+
+    // Session manager (mysql/mariadb): SHOW PROCESSLIST + KILL [QUERY].
+    ipcMain.handle(`quolldesk:${channel}:sessions`, async (_event, { connectionId } = {}) => {
+      const entry = registry.getConnection(connectionId);
+      if (!entry) return errorEnvelope(DB_ERROR_CODES.NOT_CONNECTED, "not connected");
+      registry.touchConnection(connectionId);
+      try {
+        const [res] = await runQuery(entry.client.conn, "SHOW PROCESSLIST", DEFAULT_QUERY_TIMEOUT_MS);
+        const sessions = res.rows
+          .filter((r) => String(r.Id) !== String(entry.client.conn.threadId ?? -1))
+          .map((r) => ({
+            id: String(r.Id), user: String(r.User || ''), app: String(r.Host || ''),
+            state: String(r.Command || '') + (r.State ? ` / ${r.State}` : ''),
+            seconds: Number(r.Time || 0), query: String(r.Info || '').slice(0, 500),
+          }));
+        return okEnvelope({ sessions });
+      } catch (err) {
+        return errorEnvelope(classifyDriverError(err), err?.message || "sessions failed");
+      }
+    });
+
+    ipcMain.handle(`quolldesk:${channel}:killSession`, async (_event, { connectionId, pid, cancel } = {}) => {
+      const entry = registry.getConnection(connectionId);
+      if (!entry || !pid) return errorEnvelope(entry ? DB_ERROR_CODES.INVALID_PARAMS : DB_ERROR_CODES.NOT_CONNECTED, entry ? "session id required" : "not connected");
+      registry.touchConnection(connectionId);
+      try {
+        const id = Number(pid);
+        if (!Number.isInteger(id) || id <= 0) return errorEnvelope(DB_ERROR_CODES.INVALID_PARAMS, "invalid session id");
+        await runWrite(entry.client.conn, cancel ? `KILL QUERY ${id}` : `KILL ${id}`);
+        return okEnvelope({});
+      } catch (err) {
+        return errorEnvelope(classifyDriverError(err), err?.message || "kill failed");
+      }
+    });
 
     registerSqlDialogHandlers(ipcMain, `quolldesk:${channel}`);
 

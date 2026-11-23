@@ -60,13 +60,31 @@ export interface VaultHostRowSubtitleOptions {
 
 /** Row subtitle shared by the vault tree rows and host cards. */
 export const getVaultHostRowSubtitle = (
-  host: Pick<Host, 'protocol' | 'localShellName' | 'username' | 'hostname'>,
+  host: Pick<Host, 'protocol' | 'localShellName' | 'username' | 'hostname' | 'port' | 'label' | 'tags'>,
   options?: VaultHostRowSubtitleOptions,
-): string => (
-  host.protocol === 'local'
-    ? getLocalShellHostSubtitle(host, options?.localFallback)
-    : `${host.username ?? ''}@${host.hostname ?? ''}`
-);
+): string => {
+  if (host.protocol === 'local') {
+    return getLocalShellHostSubtitle(host, options?.localFallback);
+  }
+  const username = (host.username ?? '').trim();
+  const hostname = (host.hostname ?? '').trim();
+  const port = typeof host.port === 'number' && Number.isFinite(host.port) && host.port > 0 && host.port !== 22
+    ? `:${host.port}`
+    : '';
+  if (!hostname) return username;
+  if (username) return `${username}@${hostname}${port}`;
+  // Unnamed host (label is the address): repeating the address as the subtitle
+  // duplicates the card title, so prefer tags, then a non-default port, then
+  // nothing — blank reads better than "1.2.3.4" under a "1.2.3.4" title.
+  const label = (host.label ?? '').trim();
+  if (hostname === label) {
+    const tags = (host.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+    if (tags.length > 0) return tags.join(' · ');
+    if (port) return `${hostname}${port}`;
+    return '';
+  }
+  return hostname;
+};
 
 export interface ResolveDefaultLocalShellContext {
   discoveredShells?: DiscoveredShell[];

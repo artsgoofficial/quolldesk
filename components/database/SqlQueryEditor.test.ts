@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
+import { SQL_ENGINE_BY_ID } from '../../domain/models/dbEngines';
+
 const source = readFileSync(new URL('./SqlQueryEditor.tsx', import.meta.url), 'utf8');
 
 test('query editor accepts an optional tree-driven seed query', () => {
@@ -36,9 +38,15 @@ test('history and favorites are persisted per engine id', () => {
   assert.ok(!usesOldTwoDialectShape, 'the { mysql, postgresql } shape must be engine-generic');
 });
 
-test('the query call carries timeoutMs only for mysql-family and mssql engines', () => {
-  // Gate set + spread form: pg/sqlite calls stay arg-for-arg identical to before.
-  assert.match(source, /QUERY_TIMEOUT_ENGINES[^;]*new Set\(\['mysql', 'mariadb', 'mssql'\]\)/);
-  assert.match(source, /\.\.\.\(QUERY_TIMEOUT_ENGINES\.has\(dialect\)/);
+test('the query call carries timeoutMs only for engines whose registry flag says the bridge honors it', () => {
+  // Registry-driven gate (features.queryTimeout) + spread form: pg/sqlite
+  // calls stay arg-for-arg identical to before.
+  assert.match(source, /features\.queryTimeout \? \{ timeoutMs: QUERY_TIMEOUT_MS \} : \{\}/);
   assert.match(source, /timeoutMs: QUERY_TIMEOUT_MS/);
+  // The flag itself is registry data (mysql family + mssql true; pg/sqlite false).
+  for (const [engine, expected] of [
+    ['mysql', true], ['mariadb', true], ['mssql', true], ['postgresql', false], ['sqlite', false],
+  ] as const) {
+    assert.equal(SQL_ENGINE_BY_ID[engine].features.queryTimeout, expected, engine);
+  }
 });

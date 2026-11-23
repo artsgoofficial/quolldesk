@@ -1,6 +1,7 @@
-import { Server, Usb } from "lucide-react";
+import { Database, Server, Usb } from "lucide-react";
 import React, { memo } from "react";
 import { getEffectiveHostDistro } from "../domain/host";
+import { dbHostAccent } from "../domain/models/database";
 import { resolveHostIconAppearance, resolveHostIconColorAppearance } from "../domain/hostIcon";
 import { cn } from "../lib/utils";
 import { Host } from "../types";
@@ -154,6 +155,24 @@ const DistroAvatarInner: React.FC<DistroAvatarProps> = ({
         style={{ backgroundColor: customAppearance.colorHex }}
       >
         {renderHostIconGlyph(customAppearance.iconId, iconSize)}
+      </div>
+    );
+  }
+
+  // Db connections (redis / sql engines) carry their protocol's brand accent
+  // so the host tree distinguishes them from plain hosts at a glance.
+  const dbAccent = dbHostAccent(host.protocol);
+  if (dbAccent) {
+    return (
+      <div
+        className={cn(
+          "shrink-0 flex items-center justify-center text-white",
+          containerClass,
+          className,
+        )}
+        style={{ backgroundColor: dbAccent }}
+      >
+        <Database className={iconSize} />
       </div>
     );
   }

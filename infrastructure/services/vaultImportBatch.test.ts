@@ -206,3 +206,50 @@ test("FinalShell preserves separately named profiles for the same endpoint", asy
   assert.equal(result.stats.imported, 2);
   assert.equal(result.stats.duplicates, 0);
 });
+
+const xshellFile = (
+  relativePath: string,
+  hostname: string | null,
+  port = "22",
+  protocol = "SSH",
+) => {
+  const file = new File([[
+    "[Connection]",
+    hostname ? `Host=${hostname}` : "Description=broken",
+    `Port=${port}`,
+    `Protocol=${protocol}`,
+    "[Connection\\Authentication]",
+    "Method=PASSWORD",
+    "UserName=ops",
+  ].join("\r\n")], relativePath.split("/").at(-1) ?? "session.xsh");
+  Object.defineProperty(file, "webkitRelativePath", { value: relativePath });
+  return file;
+};
+
+test("Xshell directory import keeps folder groups and ignores non-.xsh files", async () => {
+  const result = await importVaultHostFiles({
+    format: "xshell",
+    files: [
+      xshellFile("Sessions/Production/web.xsh", "web.example.com", "2222"),
+      xshellFile("Sessions/Production/Group Sub/db.xsh", "db.example.com"),
+      xshellFile("Sessions/telnet.xsh", "legacy.example.com", "23", "TELNET"),
+      xshellFile("Sessions/Archive/serial.xsh", "console.example.com", "0", "SERIAL"),
+      xshellFile("Sessions/readme.txt", "should-not-import.example.com"),
+    ],
+  });
+
+  assert.deepEqual(result.hosts.map(({ label, hostname, port, group, protocol }) => ({
+    label,
+    hostname,
+    port,
+    group,
+    protocol,
+  })), [
+    { label: "web", hostname: "web.example.com", port: 2222, group: "Production", protocol: "ssh" },
+    { label: "db", hostname: "db.example.com", port: 22, group: "Production/Group Sub", protocol: "ssh" },
+    { label: "telnet", hostname: "legacy.example.com", port: 23, group: undefined, protocol: "telnet" },
+  ]);
+  assert.deepEqual(result.groups, ["Production", "Production/Group Sub"]);
+  assert.equal(result.stats.imported, 3);
+  assert.equal(result.stats.skipped, 1);
+});

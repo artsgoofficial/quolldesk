@@ -105,66 +105,19 @@ function leadingKeyword(statement) {
 }
 
 /**
- * Scan `text` for an `=` outside quoted segments and comments. sqlite reads
- * '\' as a literal, '' / "" are the doubled-quote escapes, [brackets] quote
- * identifiers, and -- / *··* comments are skipped — so `PRAGMA foo('a=b')`
- * stays a read while `PRAGMA user_version=5` is an assignment.
+ * Blank every quoted segment and comment in `text`, preserving character
+ * positions and newlines: string literals ('' doubling — sqlite/mssql read
+ * '\' as a literal), double quotes, mssql [bracket identifiers] (doubled
+ * `]]` escape), and -- / *··* comments each become spaces. Shared residue for
+ * both gate checks below, so one scanner owns the quote/comment rules.
  */
-function hasUnquotedEquals(text) {
-  let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i], next = text[i + 1];
-    if (inLineComment) { if (ch === "\n") inLineComment = false; i += 1; continue; }
-    if (inBlockComment) {
-      if (ch === "*" && next === "/") { inBlockComment = false; i += 2; continue; }
-      i += 1; continue;
-    }
-    if (inSingle) {
-      if (ch === "'") { if (next === "'") { i += 2; continue; } inSingle = false; }
-      i += 1; continue;
-    }
-    if (inDouble) {
-      if (ch === '"') { if (next === '"') { i += 2; continue; } inDouble = false; }
-      i += 1; continue;
-    }
-    if (ch === "-" && next === "-") { inLineComment = true; i += 2; continue; }
-    if (ch === "/" && next === "*") { inBlockComment = true; i += 2; continue; }
-    if (ch === "'") { inSingle = true; i += 1; continue; }
-    if (ch === '"') { inDouble = true; i += 1; continue; }
-    if (ch === "[") { // [bracket identifier] — contents are a name, never an operator
-      i += 1;
-      while (i < text.length && text[i] !== "]") i += 1;
-      i += 1; continue;
-    }
-    if (ch === "=") return true;
-    i += 1;
-  }
-  return false;
-}
-
-function truncateSnippet(s) {
-  const t = String(s).replace(/\s+/g, " ").trim();
-  return t.length > 60 ? `${t.slice(0, 57)}...` : t;
-}
-
-/**
- * mssql's SELECT ... INTO creates a table while leading with SELECT — the
- * keyword gate alone would pass it. Scan the statement with string literals
- * ('' / "" doubling), [bracket identifiers], -- and /* *\/ comments blanked
- * (same quote/comment rules as hasUnquotedEquals) and match
- * /\bselect\b[\s\S]*\binto\b/i on the residue, so an "into" inside a string,
- * identifier or comment cannot trigger it. Simple text scan, not a parser:
- * exotic nestings may still trip it, but over-rejecting a rare read is the
- * acceptable trade-off against an approval-bypassing write.
- */
-function hasSelectInto(statement) {
-  const text = String(statement);
+function maskQuoted(text) {
+  const s = String(text);
   const blanked = [];
   let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
   let i = 0;
-  while (i < text.length) {
-    const ch = text[i], next = text[i + 1];
+  while (i < s.length) {
+    const ch = s[i], next = s[i + 1];
     if (inLineComment) { blanked.push(ch === "\n" ? "\n" : " "); if (ch === "\n") inLineComment = false; i += 1; continue; }
     if (inBlockComment) {
       if (ch === "*" && next === "/") { inBlockComment = false; blanked.push("  "); i += 2; continue; }
@@ -188,20 +141,48 @@ function hasSelectInto(statement) {
     if (ch === "/" && next === "*") { inBlockComment = true; blanked.push("  "); i += 2; continue; }
     if (ch === "'") { inSingle = true; blanked.push(" "); i += 1; continue; }
     if (ch === '"') { inDouble = true; blanked.push(" "); i += 1; continue; }
-    if (ch === "[") { // [bracket identifier] — contents are a name, never the INTO keyword
+    if (ch === "[") { // [bracket identifier] — contents are a name, never an operator/keyword
       blanked.push(" "); i += 1;
-      while (i < text.length) {
-        if (text[i] === "]") {
-          if (text[i + 1] === "]") { blanked.push("  "); i += 2; continue; }
+      while (i < s.length) {
+        if (s[i] === "]") {
+          if (s[i + 1] === "]") { blanked.push("  "); i += 2; continue; }
           break;
         }
-        blanked.push(text[i] === "\n" ? "\n" : " "); i += 1;
+        blanked.push(s[i] === "\n" ? "\n" : " "); i += 1;
       }
       blanked.push(" "); i += 1; continue;
     }
     blanked.push(ch); i += 1;
   }
-  return /\bselect\b[\s\S]*\binto\b/i.test(blanked.join(""));
+  return blanked.join("");
+}
+
+/**
+ * Scan `text` for an `=` outside quoted segments and comments (maskQuoted).
+ * sqlite reads '\' as a literal, '' / "" are the doubled-quote escapes,
+ * [brackets] quote identifiers, and -- / *··* comments are skipped — so
+ * `PRAGMA foo('a=b')` stays a read while `PRAGMA user_version=5` is an
+ * assignment.
+ */
+function hasUnquotedEquals(text) {
+  return maskQuoted(text).includes("=");
+}
+
+function truncateSnippet(s) {
+  const t = String(s).replace(/\s+/g, " ").trim();
+  return t.length > 60 ? `${t.slice(0, 57)}...` : t;
+}
+
+/**
+ * mssql's SELECT ... INTO creates a table while leading with SELECT — the
+ * keyword gate alone would pass it. Match /\bselect\b[\s\S]*\binto\b/i on the
+ * maskQuoted residue, so an "into" inside a string, identifier or comment
+ * cannot trigger it. Simple text scan, not a parser: exotic nestings may
+ * still trip it, but over-rejecting a rare read is the acceptable trade-off
+ * against an approval-bypassing write.
+ */
+function hasSelectInto(statement) {
+  return /\bselect\b[\s\S]*\binto\b/i.test(maskQuoted(statement));
 }
 
 /**

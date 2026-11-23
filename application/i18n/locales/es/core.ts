@@ -67,6 +67,7 @@ export const esCoreMessages: Messages = {
   "settings.plugins.landing.status.idle": "Activado, en espera",
   // Common
   'common.save': 'Guardar',
+  'common.copied': 'Copiado',
   'common.cancel': 'Cancelar',
   'common.close': 'Cerrar',
   'common.reset': 'Restablecer',
@@ -414,6 +415,8 @@ export const esCoreMessages: Messages = {
 
   // Settings > Application
   'settings.application.checkUpdates': 'Buscar actualizaciones',
+  'settings.application.section.about': 'Acerca de',
+  'settings.application.section.community': 'Participa',
   'settings.application.reportProblem': 'Reportar un problema',
   'settings.application.reportProblem.subtitle': 'Generar un issue de GitHub ya rellenado',
   'settings.application.community': 'Comunidad',
@@ -1241,7 +1244,7 @@ Resalta el panel dividido enfocado:
   'vault.hosts.header.live': '{count} activos',
 
   // Vault hosts header/actions
-  'vault.hosts.search.placeholder': 'Busca un host o escribe ssh usuario@hostname / ssh -p 2222 usuario@hostname...',
+  'vault.hosts.search.placeholder': 'Buscar hosts o pegar un comando ssh…',
   'vault.hosts.connect': 'Conectar',
   'vault.hosts.openSftp': 'Abrir SFTP',
   'vault.view.grid': 'Cuadrícula',
@@ -1267,6 +1270,9 @@ Resalta el panel dividido enfocado:
   'vault.hosts.copyCredentials': 'Copiar credenciales',
   'vault.hosts.copyCredentials.toast.success': 'Las credenciales se copiaron al portapapeles',
   'vault.hosts.copyCredentials.toast.noPassword': 'No hay contraseña guardada para este host',
+  'vault.hosts.copyConnectionString': 'Copiar cadena de conexión',
+  'vault.hosts.copyConnectionString.toast.success': 'Cadena de conexión copiada al portapapeles',
+  'vault.hosts.copyConnectionString.toast.error': 'No se pudo copiar la cadena de conexión',
   'vault.hosts.multiSelect': 'Selección múltiple',
   'vault.hosts.selected': '{count} seleccionados',
   'vault.hosts.selectedSummary': '{hosts} hosts y {groups} grupos seleccionados',

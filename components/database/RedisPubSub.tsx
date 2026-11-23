@@ -1,10 +1,11 @@
-import { Radio, Trash2, X } from 'lucide-react';
+import { Eraser, Radio, X } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import { formatMaybeJson } from './format';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import EmptyState from '../EmptyState';
 
 interface RedisPubSubProps {
   connectionId: string;
@@ -26,6 +27,7 @@ const RedisPubSub: React.FC<RedisPubSubProps> = ({ connectionId }) => {
   const [messages, setMessages] = useState<PubsubMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const feedRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // Live push feed. The connectionId filter keeps one workbench's page from
@@ -47,8 +49,13 @@ const RedisPubSub: React.FC<RedisPubSubProps> = ({ connectionId }) => {
     return unsubscribe;
   }, [connectionId]);
 
+  // Follow the live feed only while the user is already near the bottom —
+  // force-scrolling would yank them away from history they are reading.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const feed = feedRef.current;
+    if (!feed) return;
+    const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages]);
 
   const doSubscribe = async () => {
@@ -98,11 +105,6 @@ const RedisPubSub: React.FC<RedisPubSubProps> = ({ connectionId }) => {
         <Button size="sm" className="h-7 font-medium" disabled={busy || !channel.trim()} onClick={() => void doSubscribe()}>
           <Radio size={13} className="mr-1" />{t('db.pubsub.subscribe')}
         </Button>
-        {subscriptions.length > 0 && (
-          <Button variant="ghost" size="sm" className="h-7" onClick={() => setMessages([])}>
-            <Trash2 size={13} className="mr-1" />{t('db.pubsub.clear')}
-          </Button>
-        )}
       </div>
       {subscriptions.length > 0 && (
         <div className="px-3 py-1.5 border-b border-border/60 flex flex-wrap gap-1 shrink-0">
@@ -122,11 +124,17 @@ const RedisPubSub: React.FC<RedisPubSubProps> = ({ connectionId }) => {
         </div>
       )}
       {error && <p className="text-destructive text-xs px-3 py-2 shrink-0">{error}</p>}
-      <div className="flex-1 overflow-auto p-2 text-xs">
+      {messages.length > 0 && (
+        <div className="px-3 py-1 flex items-center justify-end border-b border-border/40 shrink-0">
+          <span className="text-[10px] text-muted-foreground mr-auto">{t('db.pubsub.messageCount', { count: messages.length })}</span>
+          <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => setMessages([])}>
+            <Eraser size={12} className="mr-1" />{t('db.pubsub.clear')}
+          </Button>
+        </div>
+      )}
+      <div ref={feedRef} className="flex-1 overflow-auto p-2 text-xs">
         {messages.length === 0 && (
-          <div className="h-full flex items-center justify-center text-muted-foreground text-center px-4">
-            <p>{t('db.pubsub.empty')}</p>
-          </div>
+          <EmptyState className="h-full" icon={<Radio size={30} />} title={t('db.pubsub.empty')} />
         )}
         {messages.map((msg, i) => (
           <div key={`${msg.receivedAt}/${i}`} className="border-b border-border/30 py-1">

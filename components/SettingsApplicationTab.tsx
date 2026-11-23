@@ -7,7 +7,7 @@ import { cn } from "../lib/utils";
 import { useApplicationBackend } from "../application/state/useApplicationBackend";
 import type { UpdateState, UseUpdateCheckResult } from "../application/state/useUpdateCheck";
 import { useI18n } from "../application/i18n/I18nProvider";
-import { SettingsAnchor, SettingsTabContent } from "./settings/settings-ui";
+import { SectionHeader, SettingsAnchor, SettingsTabContent } from "./settings/settings-ui";
 import { toast } from "./ui/toast";
 
 type AppInfo = {
@@ -171,6 +171,7 @@ export default function SettingsApplicationTab({ updateState, checkNow, openRele
     <SettingsTabContent value="application">
       <div className="flex flex-col lg:flex-row gap-10 lg:gap-14">
         <div className="lg:w-[320px] shrink-0">
+          <SectionHeader title={t("settings.application.section.about")} className="mb-4" />
           <div className="flex items-center gap-4">
             <AppLogo className="w-16 h-16" />
             <div>
@@ -227,6 +228,7 @@ export default function SettingsApplicationTab({ updateState, checkNow, openRele
         </div>
 
         <div className="flex-1">
+          <SectionHeader title={t("settings.application.section.community")} className="mb-2" />
           <div className="space-y-2">
             <SettingsAnchor anchorId="application-report-problem">
               <ActionRow

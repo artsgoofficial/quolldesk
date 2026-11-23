@@ -103,6 +103,17 @@ test('mysql payload: unchecked save-password drops the stored password', () => {
   assert.equal(h.savePassword, false);
 });
 
+test('test connection dials the typed password even when save-password is unchecked', () => {
+  const source = readFileSync(new URL('./SqlHostDetailsPanel.tsx', import.meta.url), 'utf8');
+  // runTest probes with the live form password: savePassword only gates
+  // persistence, and a dropped probe password dialed passwordless (pg SCRAM
+  // then failed with "client password must be a string").
+  assert.match(source, /buildHost\(password\)/);
+  // Save keeps the persistence semantics: the plain payload (which drops the
+  // password when unchecked) is what reaches the vault.
+  assert.match(source, /onSave\(buildHost\(\)\)/);
+});
+
 test('pg payload: identity, label fallback, tls and tunnel survive an edit', () => {
   const editing = host({ id: 'keep-id', protocol: 'postgresql', sqlConfig: { tunnelHostId: 'h1' } });
   const h = buildSqlHostPayload(SQL_ENGINE_BY_ID.postgresql, editing, form({
@@ -174,4 +185,16 @@ test('create mode: switchable engine row from the registry; edit mode: locked ba
   // Switch resets the port to the new engine default and clears stale test result.
   assert.match(source, /setPort\(String\(nextEngine\.defaultPort/);
   assert.match(source, /setTestResult\(null\)/);
+});
+
+test('connection identity: accent color palette + bootstrap SQL ride the payload', () => {
+  const source = readFileSync(new URL('./SqlHostDetailsPanel.tsx', import.meta.url), 'utf8');
+  assert.match(source, /DB_ACCENT_COLORS\.map/);
+  assert.match(source, /dbColor: form\.dbColor \|\| undefined/);
+  assert.match(source, /bootstrapSql: form\.bootstrapSql \|\| undefined/);
+  const workbench = readFileSync(new URL('../../application/state/useDatabaseWorkbenchState.ts', import.meta.url), 'utf8');
+  assert.match(workbench, /host\.bootstrapSql\?\.trim\(\)/);
+  assert.match(workbench, /dialect !== 'redis'/);
+  const cards = readFileSync(new URL('./DbConnectionsManager.tsx', import.meta.url), 'utf8');
+  assert.match(cards, /borderLeftColor: host\.dbColor/);
 });

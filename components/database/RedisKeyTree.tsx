@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Gauge, RefreshCw } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
@@ -24,9 +24,22 @@ interface RedisKeyTreeProps {
   clusterNodes?: { nodeId: string; host: string; port: number }[] | null;
   /** True for cluster hosts: the initial scan waits for clusterNodes. */
   clusterMode?: boolean;
+  /** Opens the redis ops panel (slow log / client list). */
+  onOpenOps?: () => void;
 }
 
 interface KeyEntry { name: string; nodeId?: string }
+
+/**
+ * Display form of a key inside its group: the "group:" prefix is already
+ * visible on the group header, so repeating it per row only eats width.
+ * Falls back to the full name whenever the prefix doesn't match exactly.
+ */
+const hideGroupPrefix = (name: string, group: string) => {
+  if (group === '(other)' || !group) return name;
+  const prefix = `${group}:`;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+};
 
 const groupKey = (name: string) => {
   const idx = name.indexOf(':');
@@ -43,7 +56,7 @@ const TYPE_BADGE_CLASS: Record<string, string> = {
   stream: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400',
 };
 
-const RedisKeyTree: React.FC<RedisKeyTreeProps> = ({ connectionId, db, onSelectKey, refreshToken, onKeysChanged, clusterNodes, clusterMode }) => {
+const RedisKeyTree: React.FC<RedisKeyTreeProps> = ({ connectionId, db, onSelectKey, refreshToken, onKeysChanged, clusterNodes, clusterMode, onOpenOps }) => {
   const { t } = useI18n();
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -257,6 +270,13 @@ const RedisKeyTree: React.FC<RedisKeyTreeProps> = ({ connectionId, db, onSelectK
           onClick={() => { setCreating((v) => !v); setNewKeyName(''); setError(null); }}>
           +
         </button>
+        {onOpenOps && (
+          <button type="button" title={t('db.redis.ops.title')}
+            className="h-7 w-7 flex-shrink-0 rounded border border-input text-muted-foreground hover:bg-foreground/5 hover:text-foreground flex items-center justify-center"
+            onClick={onOpenOps}>
+            <Gauge size={12} />
+          </button>
+        )}
         <RefreshCw size={13} className={`text-muted-foreground flex-shrink-0 ${loading ? 'animate-spin' : ''}`} />
       </div>
       {creating && (
@@ -293,7 +313,7 @@ const RedisKeyTree: React.FC<RedisKeyTreeProps> = ({ connectionId, db, onSelectK
                     className="flex items-center gap-1.5 w-full px-4 py-0.5 text-left hover:bg-foreground/5 truncate"
                     onClick={() => onSelectKey(entry.name, entry.nodeId)}>
                     {renderBadge(entry.name)}
-                    <span className="truncate">{entry.name}</span>
+                    <span className="truncate" title={entry.name}>{hideGroupPrefix(entry.name, group)}</span>
                     {entry.nodeId && <span className="ml-auto text-[10px] text-muted-foreground flex-shrink-0">{entry.nodeId}</span>}
                   </button>
                 </ContextMenuTrigger>

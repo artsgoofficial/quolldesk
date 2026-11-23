@@ -1,5 +1,6 @@
 import {
   Clock,
+  Code2,
   Copy,
   Database,
   DatabaseBackup,
@@ -12,11 +13,12 @@ import {
   Settings2,
   Trash2,
 } from 'lucide-react';
+import { GENERATE_KINDS, type SqlGenerateKind } from './sqlGenerate';
 import React from 'react';
 
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
-import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../ui/context-menu';
+import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger } from '../ui/context-menu';
 
 /**
  * Right-click menus for the database sidebar trees (Navicat-style). These
@@ -78,6 +80,10 @@ export interface SqlObjectContextMenuHandlers {
   onDesign?: (object: string, schema?: string) => void;
   onOpenStructure: (object: string, schema?: string) => void;
   onNewQuery: (object: string, schema?: string) => void;
+  /** 生成 SQL submenu (tables only): async meta fetch → statement into a new query tab. */
+  onGenerateSql?: (object: string, schema: string | undefined, kind: SqlGenerateKind) => void;
+  /** Cross-connection table transfer (tables only, same engine). */
+  onTransferTo?: (object: string, schema: string | undefined) => void;
   onCopyName: (object: string) => void;
   onTruncate?: (object: string, schema?: string) => void;
   onRename: (object: string, schema?: string) => void;
@@ -90,7 +96,7 @@ export interface SqlObjectContextMenuHandlers {
  */
 export const SqlObjectContextMenuContent: React.FC<
   SqlObjectContextMenuHandlers & { object: string; schema?: string; kind: SqlObjectKind }
-> = ({ object, schema, kind, onOpenData, onDesign, onOpenStructure, onNewQuery, onCopyName, onTruncate, onRename, onDrop }) => {
+> = ({ object, schema, kind, onOpenData, onDesign, onOpenStructure, onNewQuery, onGenerateSql, onTransferTo, onCopyName, onTruncate, onRename, onDrop }) => {
   const { t } = useI18n();
   const isTable = kind === 'table';
   return (
@@ -111,6 +117,25 @@ export const SqlObjectContextMenuContent: React.FC<
       <ContextMenuItem onClick={() => onNewQuery(object, schema)}>
         <FilePlus2 className="mr-2 h-4 w-4" /> {t('db.tree.menu.newQuery')}
       </ContextMenuItem>
+      {onGenerateSql && (
+        <ContextMenuSub>
+          <ContextMenuSubTrigger className="text-xs">
+            <Code2 className="mr-2 h-4 w-4" /> {t('db.tree.menu.generateSql')}
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent className="text-xs">
+            {GENERATE_KINDS.map((gen) => (
+              <ContextMenuItem key={gen} onClick={() => onGenerateSql(object, schema, gen)}>
+                {t(`db.tree.menu.gen${gen[0].toUpperCase()}${gen.slice(1)}`)}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+      )}
+      {isTable && onTransferTo && (
+        <ContextMenuItem onClick={() => onTransferTo(object, schema)}>
+          <DatabaseBackup className="mr-2 h-4 w-4" /> {t('db.tree.menu.transferTo')}
+        </ContextMenuItem>
+      )}
       <ContextMenuItem onClick={() => onCopyName(object)}>
         <Copy className="mr-2 h-4 w-4" /> {t('db.tree.menu.copyName')}
       </ContextMenuItem>

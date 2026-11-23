@@ -30,6 +30,17 @@ test("canOpenDualPaneSftp matches the SFTP host picker: not serial, not plugin",
   assert.equal(canOpenDualPaneSftp({ protocol: "plugin:example.provider.ssh" }), false);
 });
 
+test("canOpenDualPaneSftp excludes database protocols: no file transfer channel", () => {
+  // DB hosts live in the same vault list as SSH hosts but have no SFTP/SSH
+  // channel — the menu and the SFTP host picker must both hide the action.
+  assert.equal(canOpenDualPaneSftp({ protocol: "redis" }), false);
+  assert.equal(canOpenDualPaneSftp({ protocol: "mysql" }), false);
+  assert.equal(canOpenDualPaneSftp({ protocol: "postgresql" }), false);
+  assert.equal(canOpenDualPaneSftp({ protocol: "mariadb" }), false);
+  assert.equal(canOpenDualPaneSftp({ protocol: "mssql" }), false);
+  assert.equal(canOpenDualPaneSftp({ protocol: "sqlite" }), false);
+});
+
 test("planDualPaneSftpOpen connects local left and host right on empty panes", () => {
   assert.deepEqual(
     planDualPaneSftpOpen({ leftTabs: [], rightTabs: [], hostId: "host-1", hostEndpointKey: "endpoint-1" }),

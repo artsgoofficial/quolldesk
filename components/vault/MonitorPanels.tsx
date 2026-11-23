@@ -39,6 +39,7 @@ import type { Host } from "../../domain/models";
 import { buildMonitorTrendGeometry, findMonitorChartPoint } from "../../domain/monitorChart";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import EmptyState from "../EmptyState";
 import { ContextMenuItem } from "../ui/context-menu";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -567,16 +568,12 @@ export function MonitorPanels({
           </p>
         )}
           {!panel ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-              <Gauge size={36} className="text-muted-foreground" />
-              <h2 className="font-semibold">{t("monitor.empty")}</h2>
-              <p className="max-w-sm text-sm text-muted-foreground">
-                {t("monitor.emptyHint")}
-              </p>
-              <Button onClick={() => startEdit(null)}>
-                {t("monitor.createFirst")}
-              </Button>
-            </div>
+            <EmptyState
+              icon={<Gauge size={30} />}
+              title={t("monitor.empty")}
+              hint={t("monitor.emptyHint")}
+              actions={<Button onClick={() => startEdit(null)}>{t("monitor.createFirst")}</Button>}
+            />
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2 px-4 py-2">

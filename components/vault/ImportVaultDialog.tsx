@@ -77,6 +77,24 @@ const OPTIONS: ImportOption[] = [
     accept: ".json",
   },
   {
+    format: "xshell",
+    label: "Xshell",
+    iconSrc: "/import/file.png",
+    accept: ".xsh",
+  },
+  {
+    format: "dbeaver",
+    label: "DBeaver",
+    iconSrc: "/import/file.png",
+    accept: ".xml",
+  },
+  {
+    format: "navicat",
+    label: "Navicat",
+    iconSrc: "/import/file.png",
+    accept: ".ncx,.xml",
+  },
+  {
     format: "ssh_config",
     label: "ssh_config",
     iconSrc: "/import/file.png",
@@ -113,7 +131,25 @@ type ImportDialogStep =
   | "ssh-mode"
   | "moba-encoding"
   | "securecrt-source"
-  | "finalshell-source";
+  | "finalshell-source"
+  | "xshell-source";
+
+type BatchSourceFormat = "securecrt" | "finalshell" | "xshell";
+
+const BATCH_SOURCE_ACCEPT: Record<BatchSourceFormat, string> = {
+  securecrt: ".ini",
+  finalshell: ".json",
+  xshell: ".xsh",
+};
+
+const batchSourceFormatFromStep = (
+  step: ImportDialogStep,
+): BatchSourceFormat | null => {
+  if (step === "securecrt-source") return "securecrt";
+  if (step === "finalshell-source") return "finalshell";
+  if (step === "xshell-source") return "xshell";
+  return null;
+};
 
 export function VaultImportDestinationControls({
   mode,
@@ -505,6 +541,8 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
         setStep("securecrt-source");
       } else if (opt.format === "finalshell") {
         setStep("finalshell-source");
+      } else if (opt.format === "xshell") {
+        setStep("xshell-source");
       } else {
         pickFile(opt.format, opt.accept);
       }
@@ -532,9 +570,9 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
   );
 
   const handleBatchSourceChoice = useCallback(
-    (format: "securecrt" | "finalshell", source: "folder" | "file") => {
+    (format: BatchSourceFormat, source: "folder" | "file") => {
       setStep("format");
-      pickFile(format, format === "securecrt" ? ".ini" : ".json", undefined, source);
+      pickFile(format, BATCH_SOURCE_ACCEPT[format], undefined, source);
     },
     [pickFile],
   );
@@ -582,6 +620,8 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
     [getPluginPreviewAnalysis, pluginImporter.pluginPreview],
   );
 
+  const batchSourceFormat = batchSourceFormatFromStep(step);
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-y-auto">
@@ -591,10 +631,10 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-border/60 bg-muted/60 text-muted-foreground">
                   <FolderTree className="h-6 w-6" />
                 </div>
-              ) : step === "securecrt-source" || step === "finalshell-source" ? (
+              ) : batchSourceFormat ? (
                 <div className="mx-auto flex h-14 w-14 items-center justify-center">
                   <img
-                    src={step === "securecrt-source" ? "/import/securecrt.png" : "/import/file.png"}
+                    src={batchSourceFormat === "securecrt" ? "/import/securecrt.png" : "/import/file.png"}
                     alt=""
                     className="h-10 w-10 object-contain"
                   />
@@ -609,13 +649,11 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
                 </div>
               )}
               <DialogTitle className={step === "destination" || step.endsWith("-source") ? "text-lg" : "text-xl"}>
-                {step === "securecrt-source"
-                  ? t("vault.import.securecrt.promptTitle")
-                  : step === "finalshell-source"
-                    ? t("vault.import.finalshell.promptTitle")
-                    : step === "destination"
-                      ? t("vault.import.destination.settings")
-                      : t("vault.import.title")}
+                {batchSourceFormat
+                  ? t(`vault.import.${batchSourceFormat}.promptTitle`)
+                  : step === "destination"
+                    ? t("vault.import.destination.settings")
+                    : t("vault.import.title")}
               </DialogTitle>
               {step !== "destination" && !step.endsWith("-source") && (
                 <DialogDescription className="mx-auto max-w-xl">
@@ -890,11 +928,11 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
                     {t("common.back")}
                   </button>
                 </>
-              ) : step === "securecrt-source" || step === "finalshell-source" ? (
+              ) : batchSourceFormat ? (
                 <>
                   <div
                     className="grid grid-cols-2 gap-3"
-                    data-import-source-prompt={step === "securecrt-source" ? "securecrt" : "finalshell"}
+                    data-import-source-prompt={batchSourceFormat}
                   >
                     <button
                       type="button"
@@ -903,19 +941,16 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
                         "px-3 py-5 hover:bg-primary/10 hover:border-primary transition-colors",
                         "flex flex-col items-center gap-2.5",
                       )}
-                      onClick={() => handleBatchSourceChoice(
-                        step === "securecrt-source" ? "securecrt" : "finalshell",
-                        "folder",
-                      )}
+                      onClick={() => handleBatchSourceChoice(batchSourceFormat, "folder")}
                     >
                       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10">
                         <FolderOpen className="h-5 w-5 text-primary" />
                       </div>
                       <div className="text-sm font-medium text-foreground">
-                        {t(`vault.import.${step === "securecrt-source" ? "securecrt" : "finalshell"}.folder`)}
+                        {t(`vault.import.${batchSourceFormat}.folder`)}
                       </div>
                       <div className="text-xs leading-4 text-muted-foreground text-center">
-                        {t(`vault.import.${step === "securecrt-source" ? "securecrt" : "finalshell"}.folderDesc`)}
+                        {t(`vault.import.${batchSourceFormat}.folderDesc`)}
                       </div>
                     </button>
                     <button
@@ -925,19 +960,16 @@ export const ImportVaultDialog: React.FC<ImportVaultDialogProps> = ({
                         "px-3 py-5 hover:bg-muted/30 hover:border-border transition-colors",
                         "flex flex-col items-center gap-2.5",
                       )}
-                      onClick={() => handleBatchSourceChoice(
-                        step === "securecrt-source" ? "securecrt" : "finalshell",
-                        "file",
-                      )}
+                      onClick={() => handleBatchSourceChoice(batchSourceFormat, "file")}
                     >
                       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted/60">
                         <FileText className="h-5 w-5 text-muted-foreground" />
                       </div>
                       <div className="text-sm font-medium text-foreground">
-                        {t(`vault.import.${step === "securecrt-source" ? "securecrt" : "finalshell"}.file`)}
+                        {t(`vault.import.${batchSourceFormat}.file`)}
                       </div>
                       <div className="text-xs leading-4 text-muted-foreground text-center">
-                        {t(`vault.import.${step === "securecrt-source" ? "securecrt" : "finalshell"}.fileDesc`)}
+                        {t(`vault.import.${batchSourceFormat}.fileDesc`)}
                       </div>
                     </button>
                   </div>

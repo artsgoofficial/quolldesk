@@ -179,6 +179,8 @@ function makeFakeRedis() {
       return removed;
     },
     select: async (db) => { client.__db = db; },
+    // node-redis v4 config shape: CONFIG GET returns a flat object.
+    configGet: async (key) => (key === "databases" ? { databases: "32" } : {}),
     subscribe: async (channel, listener) => { (client.__subs ||= []).push({ channel, listener }); },
     pSubscribe: async (pattern, listener) => { (client.__subs ||= []).push({ channel: pattern, listener, pattern: true }); },
     unsubscribe: async () => {},
@@ -302,12 +304,46 @@ test("selectDb switches and validates", async () => {
   const ok = await call("quolldesk:redis:selectDb", { connectionId, db: 3 });
   assert.equal(ok.ok, true);
   assert.equal(ok.data.db, 3);
-  const outOfRange = await call("quolldesk:redis:selectDb", { connectionId, db: 16 });
+  // Indexes beyond the default 16 are legal — `databases` is server config.
+  const wide = await call("quolldesk:redis:selectDb", { connectionId, db: 16 });
+  assert.equal(wide.ok, true);
+  assert.equal(wide.data.db, 16);
+  const outOfRange = await call("quolldesk:redis:selectDb", { connectionId, db: 65536 });
   assert.equal(outOfRange.ok, false);
   assert.equal(outOfRange.error.code, "INVALID_PARAMS");
   const unknown = await call("quolldesk:redis:selectDb", { connectionId: "nope", db: 1 });
   assert.equal(unknown.error.code, "NOT_CONNECTED");
   await call("quolldesk:redis:disconnect", { connectionId });
+  bridge._setDriverForTests(undefined);
+});
+
+test("serverInfo reports the server's databases config; CONFIG-disabled providers degrade gracefully", async () => {
+  const { bridge, call } = setup();
+  const conn = await call("quolldesk:redis:connect", { hostname: "127.0.0.1", port: 6379 });
+  const { connectionId } = conn.data;
+  const info = await call("quolldesk:redis:serverInfo", { connectionId });
+  assert.equal(info.ok, true);
+  assert.equal(info.data.databases, 32, "CONFIG GET databases must flow through serverInfo");
+  assert.equal(info.data.summary.redis_version, "7.2.0");
+
+  // Providers that disable CONFIG (managed clouds) must not break serverInfo —
+  // the field is absent and the renderer falls back to the 16-db default.
+  const strictDriver = makeFakeRedis();
+  const innerCreate = strictDriver.createClient;
+  strictDriver.createClient = (...args) => {
+    const client = innerCreate(...args);
+    client.configGet = async () => { throw new Error("CONFIG is not allowed"); };
+    return client;
+  };
+  bridge._setDriverForTests(strictDriver);
+  const conn2 = await call("quolldesk:redis:connect", { hostname: "127.0.0.1", port: 6379 });
+  const info2 = await call("quolldesk:redis:serverInfo", { connectionId: conn2.data.connectionId });
+  assert.equal(info2.ok, true);
+  assert.equal(info2.data.databases, undefined);
+  assert.equal(info2.data.summary.redis_version, "7.2.0");
+
+  await call("quolldesk:redis:disconnect", { connectionId });
+  await call("quolldesk:redis:disconnect", { connectionId: conn2.data.connectionId });
   bridge._setDriverForTests(undefined);
 });
 

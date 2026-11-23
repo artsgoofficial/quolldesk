@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { TerminalSquare, Trash2 } from 'lucide-react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import { formatReplyValue } from './format';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import EmptyState from '../EmptyState';
 
 interface RedisConsoleProps {
   connectionId: string;
@@ -81,11 +83,16 @@ const RedisConsole: React.FC<RedisConsoleProps> = ({ connectionId }) => {
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {entries.length > 0 && (
+        <div className="px-3 py-1 flex justify-end border-b border-border/40 shrink-0">
+          <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => setEntries([])}>
+            <Trash2 size={12} className="mr-1" />{t('db.pubsub.clear')}
+          </Button>
+        </div>
+      )}
       <div className="flex-1 overflow-auto p-3 text-xs font-mono">
         {entries.length === 0 && (
-          <div className="h-full flex items-center justify-center text-muted-foreground text-center px-4">
-            <p>{t('db.console.empty')}</p>
-          </div>
+          <EmptyState className="h-full" icon={<TerminalSquare size={30} />} title={t('db.console.empty')} />
         )}
         {entries.map((entry, i) => (
           <div key={`${entry.at}/${i}`} className="border-b border-border/30 py-1">

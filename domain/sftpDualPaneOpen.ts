@@ -1,3 +1,5 @@
+import { isDbProtocol } from "./models/database";
+import type { HostProtocol } from "./models/connection";
 import { isPluginHostProtocol } from "./pluginConnection";
 
 export type DualPaneSftpTab = {
@@ -49,6 +51,11 @@ export function canOpenDualPaneSftp(host: { protocol?: string }): boolean {
   // Local-shell vault hosts have no SFTP/SSH channel: opening dual-pane SFTP
   // from one would try to SSH into localhost with empty credentials.
   if (protocol === "local") return false;
+  // Database connections (redis/mysql/pg/…) share the vault list but have no
+  // SSH/SFTP channel — SFTP against them would dial the db port with db
+  // credentials. Excluded at the domain guard so every entry point (host tree
+  // menus, SFTP host picker) stays consistent.
+  if (isDbProtocol(protocol as HostProtocol)) return false;
   if (isPluginHostProtocol(protocol)) return false;
   return true;
 }

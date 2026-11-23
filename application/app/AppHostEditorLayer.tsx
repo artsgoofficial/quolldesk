@@ -10,7 +10,7 @@ import { SqlHostDetailsPanel } from '../../components/database/SqlHostDetailsPan
 import SerialHostDetailsPanel from '../../components/SerialHostDetailsPanel';
 import { PortalContainerProvider } from '../../components/ui/portal-container';
 import { resolveGroupDefaults } from '../../domain/groupConfig';
-import { isDbProtocol } from '../../domain/models/database';
+import { isSqlEngineId } from '../../domain/models/dbEngines';
 import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { STORAGE_KEY_VAULT_HOST_PANEL_WIDTH } from '@/infrastructure/config/storageKeys';
 import type {
@@ -40,12 +40,14 @@ export function resolveWorkSurfaceHostEditorKind(
 
 /** SQL host edit routing: every db protocol except redis opens the SQL editor. */
 export function isSqlHostEditorTarget(protocol: Host['protocol'] | undefined): boolean {
-  return isDbProtocol(protocol) && protocol !== 'redis';
+  return isSqlEngineId(protocol);
 }
 
 /** Dialect for the SQL editor: the host's real engine id (redis never routes here). */
 export function resolveSqlHostEditorDialect(protocol: Host['protocol'] | undefined): SqlEngineId {
-  return isDbProtocol(protocol) && protocol !== 'redis' ? protocol : 'mysql';
+  // isSqlEngineId directly (not via isSqlHostEditorTarget) so TS keeps the
+  // narrowing; the boolean predicate above is the same registry check.
+  return isSqlEngineId(protocol) ? protocol : 'mysql';
 }
 
 function addGroupAndAncestors(groups: Set<string>, path: string | null | undefined) {

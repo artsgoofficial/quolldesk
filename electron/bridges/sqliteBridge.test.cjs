@@ -1,4 +1,5 @@
 const test = require("node:test");
+const { waitForPush } = require("./dbCommon/testHelpers.cjs");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -35,20 +36,6 @@ function setup(senderId) {
 }
 
 /** Poll the captured job-progress pushes until one with `phase` lands. */
-function waitForPush(pushes, phase, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const tick = () => {
-      const hit = pushes.find((p) => p.phase === phase);
-      if (hit) return resolve(hit);
-      if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
 
 test("registers all 13 sqlite channels", () => {
   const { handlers } = setup(61);
@@ -483,4 +470,40 @@ test("INTEGER beyond double precision reads back as a string, no driver throw", 
 
   await call("quolldesk:sqlite:disconnect", { connectionId });
   await call("quolldesk:sqlite:disconnect", { connectionId2 });
+});
+
+test("tableMeta foreignKeys: pragma rows group into composite FKs with canonical actions", async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "nc-sqlite-bridge-fk-"));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const { call } = setup(62);
+  const dbFile = path.join(dir, "fk.db");
+  const conn = await call("quolldesk:sqlite:connect", { hostname: dbFile });
+  assert.equal(conn.ok, true, JSON.stringify(conn));
+  const { connectionId } = conn.data;
+  const ddl = await call("quolldesk:sqlite:query", {
+    connectionId,
+    sql: "CREATE TABLE fk_parent(id INTEGER PRIMARY KEY);"
+      + "CREATE TABLE fk_child(id INTEGER PRIMARY KEY, pid INTEGER, rid INTEGER,"
+      + " FOREIGN KEY(pid) REFERENCES fk_parent(id),"
+      + " FOREIGN KEY(rid) REFERENCES fk_parent(id) ON DELETE SET NULL ON UPDATE CASCADE);",
+  });
+  assert.equal(ddl.ok, true, JSON.stringify(ddl));
+  // The trigger is written through node:sqlite directly: the query channel's
+  // statement splitter cannot protect BEGIN..END bodies containing semicolons
+  // (documented v1 limit) — tableMeta's read path is what's under test here.
+  const { DatabaseSync } = await import("node:sqlite");
+  const rawDb = new DatabaseSync(dbFile);
+  rawDb.exec("CREATE TRIGGER trg_child AFTER UPDATE ON fk_child BEGIN DELETE FROM fk_parent WHERE id = -1; END");
+  rawDb.close();
+  const meta = await call("quolldesk:sqlite:tableMeta", { connectionId, table: "fk_child" });
+  assert.equal(meta.ok, true, JSON.stringify(meta));
+  // Composite-capable canonical shape. PRAGMA ids number constraints in
+  // reverse DDL order — emission follows ascending id (rid first).
+  assert.deepEqual(meta.data.foreignKeys, [
+    { name: null, columns: ["rid"], refTable: "fk_parent", refSchema: null, refColumns: ["id"], onDelete: "SET NULL", onUpdate: "CASCADE" },
+    { name: null, columns: ["pid"], refTable: "fk_parent", refSchema: null, refColumns: ["id"], onDelete: "NO ACTION", onUpdate: "NO ACTION" },
+  ]);
+  assert.deepEqual(meta.data.triggers, [
+    { name: "trg_child", timing: "AFTER", event: "UPDATE", statement: "CREATE TRIGGER trg_child AFTER UPDATE ON fk_child BEGIN DELETE FROM fk_parent WHERE id = -1; END" },
+  ]);
 });

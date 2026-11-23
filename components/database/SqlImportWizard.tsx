@@ -5,6 +5,7 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { normalizeHeaderKey, parseCsv } from '../../domain/vaultImport/csvUtils';
+import { readXlsxRows } from './xlsxGrid';
 import { Button } from '../ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
 
@@ -68,9 +69,14 @@ const SqlImportWizard: React.FC<SqlImportWizardProps> = ({ connectionId, dialect
     if (!file) return;
     setError(null);
     try {
-      let text = await file.text();
-      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // strip UTF-8 BOM
-      const parsed = parseCsvRows(text);
+      let parsed: string[][];
+      if (/\.xlsx$/i.test(file.name)) {
+        parsed = await readXlsxRows(await file.arrayBuffer());
+      } else {
+        let text = await file.text();
+        if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // strip UTF-8 BOM
+        parsed = parseCsvRows(text);
+      }
       if (parsed.length === 0) throw new Error('CSV: no rows found');
       const header = parsed[0];
       // Auto-match by exact name first, then normalized (shared vault-import
@@ -144,7 +150,7 @@ const SqlImportWizard: React.FC<SqlImportWizardProps> = ({ connectionId, dialect
               <span className="text-muted-foreground">{t('db.import.pickFile')}</span>
               <input
                 type="file"
-                accept=".csv"
+                accept=".csv,.xlsx"
                 className="rounded border border-border bg-background px-2 py-1.5 file:mr-2 file:rounded file:border-0 file:bg-foreground/10 file:px-2 file:py-0.5 file:text-xs"
                 onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ''; }}
               />

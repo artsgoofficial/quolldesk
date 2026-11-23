@@ -18,7 +18,7 @@ const fs = require("node:fs");
 
 const registry = require("./dbCommon/connectionRegistry.cjs");
 const {
-  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue,
+  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue, buildTriggerMetas,
 } = require("./dbCommon/resultEnvelope.cjs");
 const {
   createDumpWriter, sqlLiteral, buildInsertStatements,
@@ -151,11 +151,15 @@ const SCHEMA_LISTING_SQL =
 // INFORMATION_SCHEMA cannot parameterize its schema qualifier when the caller
 // omits one — fall back to the session's default schema via SCHEMA_NAME().
 const COLUMNS_SQL_SCHEMA =
-  "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " +
-  "WHERE TABLE_SCHEMA = @s AND TABLE_NAME = @t ORDER BY ORDINAL_POSITION";
+  "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, CAST(ep.value AS NVARCHAR(4000)) AS COLUMN_COMMENT " +
+  "FROM INFORMATION_SCHEMA.COLUMNS c " +
+  "OUTER APPLY fn_listextendedproperty('MS_Description', 'SCHEMA', c.TABLE_SCHEMA, 'TABLE', c.TABLE_NAME, 'COLUMN', c.COLUMN_NAME) ep " +
+  "WHERE c.TABLE_SCHEMA = @s AND c.TABLE_NAME = @t ORDER BY c.ORDINAL_POSITION";
 const COLUMNS_SQL_CURRENT =
-  "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS " +
-  "WHERE TABLE_SCHEMA = SCHEMA_NAME() AND TABLE_NAME = @t ORDER BY ORDINAL_POSITION";
+  "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, CAST(ep.value AS NVARCHAR(4000)) AS COLUMN_COMMENT " +
+  "FROM INFORMATION_SCHEMA.COLUMNS c " +
+  "OUTER APPLY fn_listextendedproperty('MS_Description', 'SCHEMA', c.TABLE_SCHEMA, 'TABLE', c.TABLE_NAME, 'COLUMN', c.COLUMN_NAME) ep " +
+  "WHERE c.TABLE_SCHEMA = SCHEMA_NAME() AND c.TABLE_NAME = @t ORDER BY c.ORDINAL_POSITION";
 
 const PK_SQL_SCHEMA =
   "SELECT tc.CONSTRAINT_NAME AS constraint_name, ccu.COLUMN_NAME AS column_name " +
@@ -185,14 +189,31 @@ const ROW_COUNT_SQL =
   "WHERE p.object_id = OBJECT_ID(@qualified) AND p.index_id IN (0,1)";
 
 const FK_SQL =
-  "SELECT fk.name, pc.name AS column_name, rc.name AS ref_column, rt.name AS ref_table, rs.name AS ref_schema " +
+  "SELECT fk.name, pc.name AS column_name, rc.name AS ref_column, rt.name AS ref_table, rs.name AS ref_schema, " +
+  "fkc.constraint_column_id, " +
+  "CASE fk.delete_referential_action WHEN 1 THEN 'CASCADE' WHEN 2 THEN 'SET NULL' WHEN 3 THEN 'SET DEFAULT' ELSE 'NO ACTION' END AS on_delete, " +
+  "CASE fk.update_referential_action WHEN 1 THEN 'CASCADE' WHEN 2 THEN 'SET NULL' WHEN 3 THEN 'SET DEFAULT' ELSE 'NO ACTION' END AS on_update " +
   "FROM sys.foreign_keys fk " +
   "JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id " +
   "JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id " +
   "JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id " +
   "JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id " +
   "JOIN sys.schemas rs ON rs.schema_id = rt.schema_id " +
-  "WHERE fk.parent_object_id = OBJECT_ID(@qualified)";
+  "WHERE fk.parent_object_id = OBJECT_ID(@qualified) " +
+  "ORDER BY fk.name, fkc.constraint_column_id";
+
+const TRIGGERS_SQL =
+  "SELECT tr.name, " +
+  "CASE WHEN tr.is_instead_of_trigger = 1 THEN 'INSTEAD OF' ELSE 'AFTER' END AS timing, " +
+  "STUFF((SELECT ', ' + te.type_desc FROM sys.trigger_events te WHERE te.object_id = tr.object_id ORDER BY te.type_desc FOR XML PATH('')), 1, 2, '') AS event, " +
+  "sm.definition AS statement " +
+  "FROM sys.triggers tr " +
+  "JOIN sys.sql_modules sm ON sm.object_id = tr.object_id " +
+  "WHERE tr.parent_id = OBJECT_ID(@qualified) " +
+  "ORDER BY tr.name";
+
+// Trigger rows group into the canonical read-only shape via the shared
+// dbCommon mapper (same contract as the mysql family and pg paths).
 
 /**
  * Run one metadata query with @s/@t/@qualified named inputs (only the ones
@@ -208,19 +229,29 @@ async function runMeta(pool, sql, { s, t, qualified } = {}) {
 }
 
 /**
- * One mssql recordset (row objects; non-stream mode exposes no column
- * descriptions, so column names come from the first row's keys) → grid
- * result set: columns + cellified value arrays, capped at MAX_ROWS.
+ * Shared recordset → grid core: columns come from the first row's keys
+ * (non-stream tedious exposes no column descriptions), rows are capped and
+ * cellified with serializeCellValue (tedious Dates/Buffers → JSON-safe).
+ * rowShape 'array' zips cells against columns (grid rows); 'object' keeps
+ * named cells (mysql-family batch segments).
  */
-function toResultSet(recordset) {
+function cellifyRecordset(recordset, maxRows = MAX_ROWS, rowShape = "array") {
   const rows = Array.isArray(recordset) ? recordset : [];
   const columns = (rows[0] ? Object.keys(rows[0]) : []).map((name) => ({ name }));
-  return {
-    columns,
-    rows: rows.slice(0, MAX_ROWS).map((row) => columns.map((c) => serializeCellValue(row[c.name]))),
-    affectedRows: undefined,
-    truncated: rows.length > MAX_ROWS,
-  };
+  const cap = Math.max(1, Number(maxRows) || MAX_ROWS);
+  const cellRows = rows.slice(0, cap).map((row) =>
+    rowShape === "object"
+      ? Object.fromEntries(columns.map((c) => [c.name, serializeCellValue(row?.[c.name])]))
+      : columns.map((c) => serializeCellValue(row[c.name])));
+  return { columns, rows: cellRows, truncated: rows.length > cellRows.length };
+}
+
+/**
+ * One mssql recordset (row objects) → grid result set: columns + cellified
+ * value arrays, capped at MAX_ROWS.
+ */
+function toResultSet(recordset) {
+  return { ...cellifyRecordset(recordset, MAX_ROWS), affectedRows: undefined };
 }
 
 /**
@@ -231,10 +262,8 @@ function toResultSet(recordset) {
 async function runLimitedQuery(pool, sql, maxRows = 200) {
   const res = await pool.request().query(String(sql));
   const recordset = (res.recordsets && res.recordsets[0]) || [];
-  const columns = (recordset[0] ? Object.keys(recordset[0]) : []).map((name) => ({ name }));
-  const rows = recordset.slice(0, Math.max(1, Number(maxRows) || 200))
-    .map((row) => columns.map((c) => serializeCellValue(row[c.name])));
-  return { rows, columns, truncated: recordset.length > rows.length, rowCount: recordset.length };
+  const { columns, rows, truncated } = cellifyRecordset(recordset, maxRows);
+  return { rows, columns, truncated, rowCount: recordset.length };
 }
 
 /**
@@ -242,25 +271,18 @@ async function runLimitedQuery(pool, sql, maxRows = 200) {
  * mysql-family shaped segments — `{ columns, rows, okPacket, truncated }[]` —
  * shared by runQuery (plain pool batch) and runReadOnlyBatch
  * (Transaction-bound read batch) so the service maps mssql exactly like the
- * mysql path. Rows are cellified OBJECT rows (serializeCellValue per cell:
- * tedious Dates/Buffers → JSON-safe); the flattened rowsAffected aggregate
- * attaches to the last column-less result set (or a synthetic trailing set
- * for a pure-DML batch), same semantics as the quolldesk:mssql:query channel.
+ * mysql path. Rows are cellified OBJECT rows; the flattened rowsAffected
+ * aggregate attaches to the last column-less result set (or a synthetic
+ * trailing set for a pure-DML batch), same semantics as the
+ * quolldesk:mssql:query channel.
  */
 function mapBatchResult(res) {
   const recordsets = Array.isArray(res.recordsets) ? res.recordsets : [];
   const affectedTotal = (res.rowsAffected || []).reduce((sum, n) => sum + (Number(n) || 0), 0);
-  const segments = recordsets.map((recordset) => {
-    const rows = Array.isArray(recordset) ? recordset : [];
-    const columns = (rows[0] ? Object.keys(rows[0]) : []).map((name) => ({ name }));
-    return {
-      columns,
-      rows: rows.slice(0, MAX_ROWS).map((row) =>
-        Object.fromEntries(columns.map((c) => [c.name, serializeCellValue(row?.[c.name])]))),
-      okPacket: null,
-      truncated: rows.length > MAX_ROWS,
-    };
-  });
+  const segments = recordsets.map((recordset) => ({
+    ...cellifyRecordset(recordset, MAX_ROWS, "object"),
+    okPacket: null,
+  }));
   let target = null;
   for (let i = segments.length - 1; i >= 0; i -= 1) {
     if (!segments[i].columns.length) { target = segments[i]; break; }
@@ -522,6 +544,20 @@ function registerHandlers(ipcMain, options = {}) {
     }
   });
 
+  // Group the ordered per-column FK rows into composite-capable constraints
+  // (canonical FK shape shared across the four bridges).
+  const buildForeignKeys = (fkRows) => {
+    const seen = new Map();
+    for (const r of fkRows) {
+      const fk = seen.get(r.name)
+        || { name: r.name, columns: [], refTable: r.ref_table, refSchema: r.ref_schema, refColumns: [], onDelete: r.on_delete || null, onUpdate: r.on_update || null };
+      fk.columns.push(r.column_name);
+      fk.refColumns.push(r.ref_column);
+      seen.set(r.name, fk);
+    }
+    return [...seen.values()];
+  };
+
   ipcMain.handle("quolldesk:mssql:tableMeta", async (_event, { connectionId, table, schema } = {}) => {
     const entry = registry.getConnection(connectionId);
     if (!entry || !table) return errorEnvelope(entry ? DB_ERROR_CODES.INVALID_PARAMS : DB_ERROR_CODES.NOT_CONNECTED, entry ? "table required" : "not connected");
@@ -532,13 +568,14 @@ function registerHandlers(ipcMain, options = {}) {
     try {
       // INFORMATION_SCHEMA parts stay sequential-per-query but run together
       // via Promise.all (one request each on the pool).
-      const [columns, pkRows, indexRows, ddlRows, countRows, fkRows] = await Promise.all([
+      const [columns, pkRows, indexRows, ddlRows, countRows, fkRows, triggerRows] = await Promise.all([
         runMeta(entry.client.pool, schema ? COLUMNS_SQL_SCHEMA : COLUMNS_SQL_CURRENT, { s: schema, t: table }),
         runMeta(entry.client.pool, schema ? PK_SQL_SCHEMA : PK_SQL_CURRENT, { s: schema, t: table }),
         runMeta(entry.client.pool, INDEXES_SQL, { qualified }),
         runMeta(entry.client.pool, DDL_SQL, { qualified }),
         runMeta(entry.client.pool, ROW_COUNT_SQL, { qualified }),
         runMeta(entry.client.pool, FK_SQL, { qualified }),
+        runMeta(entry.client.pool, TRIGGERS_SQL, { qualified }),
       ]);
       const pkCols = pkRows.map((r) => r.column_name).filter(Boolean);
       const pkSet = new Set(pkCols);
@@ -555,13 +592,13 @@ function registerHandlers(ipcMain, options = {}) {
         columns: columns.map((c) => ({
           name: c.COLUMN_NAME, type: c.DATA_TYPE, nullable: c.IS_NULLABLE === "YES",
           defaultValue: c.COLUMN_DEFAULT, key: pkSet.has(c.COLUMN_NAME) ? "PRI" : null,
+          comment: c.COLUMN_COMMENT || null,
         })),
         indexes: [...seen.values()],
         primaryKey: pkCols.length > 0 ? { name: pkRows[0]?.constraint_name || null, columns: pkCols } : null,
         ddl: ddlRows[0]?.definition ?? null,
-        foreignKeys: fkRows.map((r) => ({
-          column: r.column_name, refTable: r.ref_table, refSchema: r.ref_schema, refColumn: r.ref_column,
-        })),
+        foreignKeys: buildForeignKeys(fkRows),
+        triggers: buildTriggerMetas(triggerRows),
         rowCountEstimate: Number(countRows[0]?.c ?? 0),
       });
     } catch (err) {
@@ -692,6 +729,45 @@ function registerHandlers(ipcMain, options = {}) {
 
   // ---- Backup / restore ----
 
+  // Session manager: sys.dm_exec_sessions (this connection's session excluded
+  // via @@SPID) + KILL / KILL <only> cancel via ALTER … KILL QUERY.
+  ipcMain.handle("quolldesk:mssql:sessions", async (_event, { connectionId } = {}) => {
+    const entry = registry.getConnection(connectionId);
+    if (!entry) return errorEnvelope(DB_ERROR_CODES.NOT_CONNECTED, "not connected");
+    registry.touchConnection(connectionId);
+    try {
+      const rows = await runMeta(entry.client.pool,
+        "SELECT s.session_id, s.login_name AS login_name, s.host_name AS host_name, s.status, " +
+        "DATEDIFF(second, s.last_request_start_time, GETDATE()) AS seconds, " +
+        "COALESCE(CAST(r.command AS nvarchar(64)), '') AS command " +
+        "FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id " +
+        "WHERE s.session_id <> @@SPID AND s.is_user_process = 1 ORDER BY s.session_id");
+      const sessions = rows.map((r) => ({
+        id: String(r.session_id), user: String(r.login_name || ''), app: String(r.host_name || ''),
+        state: `${String(r.status || '')}${r.command ? ` / ${r.command}` : ''}`,
+        seconds: Number(r.seconds || 0), query: '',
+      }));
+      return okEnvelope({ sessions });
+    } catch (err) {
+      return errorEnvelope(classifyDriverError(err), err?.message || "sessions failed");
+    }
+  });
+
+  ipcMain.handle("quolldesk:mssql:killSession", async (_event, { connectionId, pid, cancel } = {}) => {
+    const entry = registry.getConnection(connectionId);
+    if (!entry || !pid) return errorEnvelope(entry ? DB_ERROR_CODES.INVALID_PARAMS : DB_ERROR_CODES.NOT_CONNECTED, entry ? "session id required" : "not connected");
+    registry.touchConnection(connectionId);
+    try {
+      const id = Number(pid);
+      if (!Number.isInteger(id) || id <= 0) return errorEnvelope(DB_ERROR_CODES.INVALID_PARAMS, "invalid session id");
+      const req = entry.client.pool.request();
+      await req.query(cancel ? `KILL ${id}` : `KILL ${id}`);
+      return okEnvelope({});
+    } catch (err) {
+      return errorEnvelope(classifyDriverError(err), err?.message || "kill failed");
+    }
+  });
+
   registerSqlDialogHandlers(ipcMain, "quolldesk:mssql");
 
   // Async dump job: the invoke returns { jobId } immediately; progress and
@@ -745,5 +821,5 @@ function registerHandlers(ipcMain, options = {}) {
 function closeAllForSender(senderId) { return registry.closeAllForSender(senderId); }
 
 module.exports = {
-  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery, runQuery, runReadOnlyBatch,
+  registerHandlers, closeAllForSender, _setDriverForTests, _setDialogForTests, runLimitedQuery, runQuery, runReadOnlyBatch, EXCLUDED_SCHEMAS,
 };

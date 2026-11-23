@@ -8,15 +8,16 @@
  * Databases section renders engine-grouped (registry order, brand accent
  * per group); Redis stays a single flat list with the same row treatment.
  */
-import { Database, Pencil, Plus, Trash2, Copy, Play } from 'lucide-react';
+import { Database, Pencil, Plus, Trash2, Copy, Play, Server, Upload } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
 import { upsertHostById } from '../../domain/host';
-import { hostsForDbSection, sshTunnelCandidates } from '../../domain/models/database';
+import { hostsForDbSection, sshTunnelCandidates, dbHostAccent, REDIS_HOST_ACCENT } from '../../domain/models/database';
 import { SQL_ENGINES, SQL_ENGINE_BY_ID, isSqlEngineId, type SqlEngineDescriptor, type SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 import { ConfirmDialog } from '../ui/confirm-dialog';
+import EmptyState from '../EmptyState';
 import { resolveSqlEngineForEdit } from './SqlHostDetailsPanel';
 
 /** Row address line: file-backed engines (SQLite) live at a path, not host:port. */
@@ -24,9 +25,6 @@ export const dbRowAddressLine = (host: Pick<Host, 'hostname' | 'port' | 'protoco
   const engine = isSqlEngineId(host.protocol) ? SQL_ENGINE_BY_ID[host.protocol] : undefined;
   return engine?.addressMode === 'file' ? host.hostname : `${host.hostname}:${host.port}`;
 };
-
-/** Redis flat-list accent (brand red) — redis hosts have no registry descriptor. */
-const REDIS_ACCENT = '#D44B4B';
 
 export interface DbHostGroup { engine: SqlEngineDescriptor; hosts: Host[] }
 
@@ -46,8 +44,8 @@ export const groupSectionHosts = (section: 'redis' | 'databases', hosts: Host[])
     }));
 };
 
-const rowAccent = (host: Host): string =>
-  isSqlEngineId(host.protocol) ? SQL_ENGINE_BY_ID[host.protocol].accent : REDIS_ACCENT;
+/** Row accent: protocol brand accent (domain dbHostAccent), redis-red fallback. */
+const rowAccent = (host: Host): string => dbHostAccent(host.protocol) ?? REDIS_HOST_ACCENT;
 
 interface DbConnectionsManagerProps {
   section: 'redis' | 'databases';
@@ -67,6 +65,8 @@ export interface DbConnectionsManagerOwnProps {
   hosts: Host[];
   onUpdateHosts: (hosts: Host[] | ((prev: Host[]) => Host[])) => void | Promise<unknown>;
   onConnect: (host: Host) => void;
+  /** Opens the shared vault import dialog (DBeaver/Navicat cards live there). */
+  onImportClick?: () => void;
 }
 
 // Card language mirrors the vault host grid (soft-card elevate rounded-xl).
@@ -81,7 +81,7 @@ const cardGrid = 'grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-3';
 
 const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsManagerOwnProps> = ({
   section, metaLine, detailsPanel,
-  hosts, onUpdateHosts, onConnect,
+  hosts, onUpdateHosts, onConnect, onImportClick,
 }) => {
   const { t } = useI18n();
   const sectionHosts = useMemo(() => hostsForDbSection(hosts, section), [hosts, section]);
@@ -113,7 +113,8 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
   const hostCard = (host: Host) => (
     <div
       key={host.id}
-      className={cardClasses}
+      className={`${cardClasses} ${host.dbColor ? 'border-l-4' : ''}`}
+      style={host.dbColor ? { borderLeftColor: host.dbColor } : undefined}
       role="button"
       tabIndex={0}
       aria-label={`${host.label || host.hostname} · ${t('db.action.connect')}`}
@@ -171,12 +172,34 @@ const DbConnectionsManager: React.FC<DbConnectionsManagerProps & DbConnectionsMa
     <div className="relative h-full">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border/60">
         <h2 className="text-sm font-medium">{t(`db.section.${section}.title`)}</h2>
-        <Button size="sm" onClick={openNew}>
-          <Plus size={14} className="mr-1" />{t('db.action.new')}
-        </Button>
+        <div className="flex items-center gap-2">
+          {onImportClick && (
+            <Button size="sm" variant="outline" onClick={onImportClick}>
+              <Upload size={14} className="mr-1" />{t('vault.hosts.import')}
+            </Button>
+          )}
+          <Button size="sm" onClick={openNew}>
+            <Plus size={14} className="mr-1" />{t('db.action.new')}
+          </Button>
+        </div>
       </div>
       {sectionHosts.length === 0 ? (
-        <div className="p-8 text-center text-sm text-muted-foreground">{t(`db.section.${section}.empty`)}</div>
+        <EmptyState
+          icon={section === 'redis' ? <Server size={30} /> : <Database size={30} />}
+          title={t(`db.section.${section}.empty`)}
+          actions={(
+            <div className="flex items-center gap-2">
+              {onImportClick && (
+                <Button size="sm" variant="outline" onClick={onImportClick}>
+                  <Upload size={14} className="mr-1" />{t('vault.hosts.import')}
+                </Button>
+              )}
+              <Button size="sm" onClick={openNew}>
+                <Plus size={14} className="mr-1" />{t('db.action.new')}
+              </Button>
+            </div>
+          )}
+        />
       ) : (
         <div className="px-4 pb-4 overflow-auto" style={{ height: 'calc(100% - 49px)' }}>
           {groups

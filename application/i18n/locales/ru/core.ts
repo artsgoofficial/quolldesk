@@ -41,6 +41,7 @@ export const ruCoreMessages: Messages = {
 
   // Common
   'common.save': 'Сохранить',
+  'common.copied': 'Скопировано',
   'common.cancel': 'Отмена',
   'common.close': 'Закрыть',
   'common.reset': 'Сбросить',
@@ -372,6 +373,8 @@ export const ruCoreMessages: Messages = {
 
   // Settings > Application
   'settings.application.checkUpdates': 'Проверить обновления',
+  'settings.application.section.about': 'О программе',
+  'settings.application.section.community': 'Участвовать',
   'settings.application.reportProblem': 'Сообщить о проблеме',
   'settings.application.reportProblem.subtitle': 'Создать заранее заполненную задачу на GitHub',
   'settings.application.community': 'Сообщество',

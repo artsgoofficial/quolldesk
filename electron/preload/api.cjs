@@ -6,6 +6,41 @@ const { randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { stageRendererFileToTemp } = require("./stageUploadFile.cjs");
 
+// SQL engine client surfaces: every engine exposes the same method set over
+// `quolldesk:<channel>:<rpc>` channels (sqlite omits the server-session
+// manager; its file picker stays explicit in the api object). Generated so a
+// new engine is one channel entry, not another pasted 14-method block.
+const SQL_ENGINE_CHANNELS = ["mysql", "pg", "mariadb", "mssql", "sqlite"];
+const capChannel = (chan) => (chan === "pg" ? "Pg" : chan.charAt(0).toUpperCase() + chan.slice(1));
+function buildSqlEngineClientApi(ipc) {
+  const api = {};
+  for (const chan of SQL_ENGINE_CHANNELS) {
+    const C = capChannel(chan);
+    const invoke = (rpc, arg) => ipc.invoke(`quolldesk:${chan}:${rpc}`, arg);
+    Object.assign(api, {
+      [`connect${C}`]: async (options) => invoke("connect", options),
+      [`disconnect${C}`]: async (connectionId) => invoke("disconnect", { connectionId }),
+      [`test${C}Connection`]: async (options) => invoke("test", options),
+      [`get${C}SchemaTree`]: async (args) => invoke("schemaTree", args),
+      [`get${C}TableMeta`]: async (args) => invoke("tableMeta", args),
+      [`get${C}TableRows`]: async (args) => invoke("tableRows", args),
+      [`query${C}`]: async (args) => invoke("query", args),
+      [`apply${C}TableChanges`]: async (args) => invoke("applyTableChanges", args),
+      [`pick${C}BackupPath`]: async (args) => invoke("pickBackupPath", args),
+      [`pick${C}RestoreFile`]: async (args) => invoke("pickRestoreFile", args),
+      [`backup${C}`]: async (args) => invoke("backup", args),
+      [`restore${C}`]: async (args) => invoke("restore", args),
+    });
+    if (chan !== "sqlite") {
+      Object.assign(api, {
+        [`sessions${C}`]: async (args) => invoke("sessions", args),
+        [`kill${C}Session`]: async (args) => invoke("killSession", args),
+      });
+    }
+  }
+  return api;
+}
+
 function createPreloadApi(ctx) {
   const sessionLogFinalizers = new Set();
   let pendingSessionLogFinalization = null;
@@ -456,73 +491,11 @@ function createPreloadApi(ctx) {
     return () => { ipcRenderer.removeListener("quolldesk:redis:pubsubMessage", listener); };
   },
 
-  connectMysql: async (options) => ipcRenderer.invoke("quolldesk:mysql:connect", options),
-  disconnectMysql: async (connectionId) => ipcRenderer.invoke("quolldesk:mysql:disconnect", { connectionId }),
-  testMysqlConnection: async (options) => ipcRenderer.invoke("quolldesk:mysql:test", options),
-  getMysqlSchemaTree: async (args) => ipcRenderer.invoke("quolldesk:mysql:schemaTree", args),
-  getMysqlTableMeta: async (args) => ipcRenderer.invoke("quolldesk:mysql:tableMeta", args),
-  getMysqlTableRows: async (args) => ipcRenderer.invoke("quolldesk:mysql:tableRows", args),
-  queryMysql: async (args) => ipcRenderer.invoke("quolldesk:mysql:query", args),
-  applyMysqlTableChanges: async (args) => ipcRenderer.invoke("quolldesk:mysql:applyTableChanges", args),
-
-  connectPg: async (options) => ipcRenderer.invoke("quolldesk:pg:connect", options),
-  disconnectPg: async (connectionId) => ipcRenderer.invoke("quolldesk:pg:disconnect", { connectionId }),
-  testPgConnection: async (options) => ipcRenderer.invoke("quolldesk:pg:test", options),
-  getPgSchemaTree: async (args) => ipcRenderer.invoke("quolldesk:pg:schemaTree", args),
-  getPgTableMeta: async (args) => ipcRenderer.invoke("quolldesk:pg:tableMeta", args),
-  getPgTableRows: async (args) => ipcRenderer.invoke("quolldesk:pg:tableRows", args),
-  queryPg: async (args) => ipcRenderer.invoke("quolldesk:pg:query", args),
-  applyPgTableChanges: async (args) => ipcRenderer.invoke("quolldesk:pg:applyTableChanges", args),
-
-  // SQL backup/restore (Wave 6): async jobs push progress on the shared
-  // quolldesk:db:jobProgress channel (payload carries the dialect).
-  pickMysqlBackupPath: async (args) => ipcRenderer.invoke("quolldesk:mysql:pickBackupPath", args),
-  pickMysqlRestoreFile: async (args) => ipcRenderer.invoke("quolldesk:mysql:pickRestoreFile", args),
-  backupMysql: async (args) => ipcRenderer.invoke("quolldesk:mysql:backup", args),
-  restoreMysql: async (args) => ipcRenderer.invoke("quolldesk:mysql:restore", args),
-  pickPgBackupPath: async (args) => ipcRenderer.invoke("quolldesk:pg:pickBackupPath", args),
-  pickPgRestoreFile: async (args) => ipcRenderer.invoke("quolldesk:pg:pickRestoreFile", args),
-  backupPg: async (args) => ipcRenderer.invoke("quolldesk:pg:backup", args),
-  restorePg: async (args) => ipcRenderer.invoke("quolldesk:pg:restore", args),
-
-  connectMariadb: async (options) => ipcRenderer.invoke("quolldesk:mariadb:connect", options),
-  disconnectMariadb: async (connectionId) => ipcRenderer.invoke("quolldesk:mariadb:disconnect", { connectionId }),
-  testMariadbConnection: async (options) => ipcRenderer.invoke("quolldesk:mariadb:test", options),
-  getMariadbSchemaTree: async (args) => ipcRenderer.invoke("quolldesk:mariadb:schemaTree", args),
-  getMariadbTableMeta: async (args) => ipcRenderer.invoke("quolldesk:mariadb:tableMeta", args),
-  getMariadbTableRows: async (args) => ipcRenderer.invoke("quolldesk:mariadb:tableRows", args),
-  queryMariadb: async (args) => ipcRenderer.invoke("quolldesk:mariadb:query", args),
-  applyMariadbTableChanges: async (args) => ipcRenderer.invoke("quolldesk:mariadb:applyTableChanges", args),
-  pickMariadbBackupPath: async (args) => ipcRenderer.invoke("quolldesk:mariadb:pickBackupPath", args),
-  pickMariadbRestoreFile: async (args) => ipcRenderer.invoke("quolldesk:mariadb:pickRestoreFile", args),
-  backupMariadb: async (args) => ipcRenderer.invoke("quolldesk:mariadb:backup", args),
-  restoreMariadb: async (args) => ipcRenderer.invoke("quolldesk:mariadb:restore", args),
-
-  connectMssql: async (options) => ipcRenderer.invoke("quolldesk:mssql:connect", options),
-  disconnectMssql: async (connectionId) => ipcRenderer.invoke("quolldesk:mssql:disconnect", { connectionId }),
-  testMssqlConnection: async (options) => ipcRenderer.invoke("quolldesk:mssql:test", options),
-  getMssqlSchemaTree: async (args) => ipcRenderer.invoke("quolldesk:mssql:schemaTree", args),
-  getMssqlTableMeta: async (args) => ipcRenderer.invoke("quolldesk:mssql:tableMeta", args),
-  getMssqlTableRows: async (args) => ipcRenderer.invoke("quolldesk:mssql:tableRows", args),
-  queryMssql: async (args) => ipcRenderer.invoke("quolldesk:mssql:query", args),
-  applyMssqlTableChanges: async (args) => ipcRenderer.invoke("quolldesk:mssql:applyTableChanges", args),
-  pickMssqlBackupPath: async (args) => ipcRenderer.invoke("quolldesk:mssql:pickBackupPath", args),
-  pickMssqlRestoreFile: async (args) => ipcRenderer.invoke("quolldesk:mssql:pickRestoreFile", args),
-  backupMssql: async (args) => ipcRenderer.invoke("quolldesk:mssql:backup", args),
-  restoreMssql: async (args) => ipcRenderer.invoke("quolldesk:mssql:restore", args),
-
-  connectSqlite: async (options) => ipcRenderer.invoke("quolldesk:sqlite:connect", options),
-  disconnectSqlite: async (connectionId) => ipcRenderer.invoke("quolldesk:sqlite:disconnect", { connectionId }),
-  testSqliteConnection: async (options) => ipcRenderer.invoke("quolldesk:sqlite:test", options),
-  getSqliteSchemaTree: async (args) => ipcRenderer.invoke("quolldesk:sqlite:schemaTree", args),
-  getSqliteTableMeta: async (args) => ipcRenderer.invoke("quolldesk:sqlite:tableMeta", args),
-  getSqliteTableRows: async (args) => ipcRenderer.invoke("quolldesk:sqlite:tableRows", args),
-  querySqlite: async (args) => ipcRenderer.invoke("quolldesk:sqlite:query", args),
-  applySqliteTableChanges: async (args) => ipcRenderer.invoke("quolldesk:sqlite:applyTableChanges", args),
-  pickSqliteBackupPath: async (args) => ipcRenderer.invoke("quolldesk:sqlite:pickBackupPath", args),
-  pickSqliteRestoreFile: async (args) => ipcRenderer.invoke("quolldesk:sqlite:pickRestoreFile", args),
-  backupSqlite: async (args) => ipcRenderer.invoke("quolldesk:sqlite:backup", args),
-  restoreSqlite: async (args) => ipcRenderer.invoke("quolldesk:sqlite:restore", args),
+  // SQL engine clients (mysql / pg / mariadb / mssql / sqlite): structurally
+  // identical surfaces over per-engine channels — generated per engine above.
+  // Backup/restore jobs push progress on the shared quolldesk:db:jobProgress
+  // channel (payload carries the dialect).
+  ...buildSqlEngineClientApi(ipcRenderer),
   pickSqliteDatabaseFile: async (args) => ipcRenderer.invoke("quolldesk:sqlite:pickDatabaseFile", args ?? {}),
 
   onDbJobProgress: (cb) => {

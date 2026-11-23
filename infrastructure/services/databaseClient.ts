@@ -149,7 +149,7 @@ function makeRedisMethods() {
     keyValue: (args: { connectionId: string; key: string; type: string; cursor?: number | string; count?: number; nodeId?: string }) =>
       call<{ items: { index: number | string; value: string | null; score?: number }[]; cursor?: number | string; hasMore?: boolean; truncated?: boolean }>('getRedisKeyValue', args),
     serverInfo: (args: { connectionId: string; nodeId?: string }) =>
-      call<{ summary: Record<string, string>; nodes?: { nodeId: string; host: string; port: number; role: string }[] }>('getRedisServerInfo', args),
+      call<{ summary: Record<string, string>; nodes?: { nodeId: string; host: string; port: number; role: string }[]; databases?: number }>('getRedisServerInfo', args),
     selectDb: (args: { connectionId: string; db: number }) =>
       call<{ db: number }>('selectRedisDb', args),
     keyTypes: (args: { connectionId: string; keys: string[]; nodeId?: string }) =>
@@ -231,6 +231,11 @@ function makeSqlMethods(dialect: SqlEngineId) {
       call<{ jobId: string }>(`backup${cap}`, args),
     restore: (args: DbRestoreOptions) =>
       call<{ jobId: string }>(`restore${cap}`, args),
+    // Session manager (pg/mysql/mariadb/mssql only — sqlite has no server
+    // sessions; the UI gates on features.sessions).
+    sessions: (args: { connectionId: string }) => call<{ sessions: { id: string; user: string; app: string; state: string; seconds: number; query: string }[] }>(`sessions${cap}`, args),
+    killSession: (args: { connectionId: string; pid: string; cancel?: boolean }) =>
+      call<Record<string, never>>(`kill${cap}Session`, args),
     onJobProgress: (cb: (payload: DbJobProgress) => void) => {
       const fn = bridge().onDbJobProgress;
       if (typeof fn !== 'function') throw new DbClientError('BRIDGE_UNAVAILABLE', 'onDbJobProgress unavailable');

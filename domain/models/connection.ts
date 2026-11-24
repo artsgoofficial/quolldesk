@@ -52,7 +52,7 @@ export interface EnvVar {
 }
 
 // Protocol type for connections
-export type BuiltInHostProtocol = 'ssh' | 'telnet' | 'mosh' | 'et' | 'local' | 'serial' | 'redis' | 'mysql' | 'postgresql';
+export type BuiltInHostProtocol = 'ssh' | 'telnet' | 'mosh' | 'et' | 'local' | 'serial' | 'redis' | 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite';
 export type PluginHostProtocol = `plugin:${string}`;
 export type HostProtocol = BuiltInHostProtocol | PluginHostProtocol;
 export type PluginConfigurationValue =
@@ -174,6 +174,10 @@ export interface Host {
   id: string;
   label: string;
   hostname: string;
+  /** Accent color for database connection cards (palette hex; database protocols only). */
+  dbColor?: string;
+  /** SQL bootstrap statement(s) executed after a successful database connect (database protocols only). */
+  bootstrapSql?: string;
   port?: number;
   username: string;
   // Optional reference to a reusable identity (username + auth) stored in Keychain.
@@ -276,7 +280,7 @@ export interface Host {
   telnetPassword?: string; // Telnet-specific password
   // Serial-specific configuration (for protocol='serial' hosts)
   serialConfig?: SerialConfig;
-  // Database client connections (protocol='redis' | 'mysql' | 'postgresql')
+  // Database client connections (protocol='redis' | 'mysql' | 'postgresql' | 'mariadb' | 'mssql' | 'sqlite')
   redisConfig?: RedisConnectionConfig;
   sqlConfig?: SqlConnectionConfig;
   // SFTP specific configuration

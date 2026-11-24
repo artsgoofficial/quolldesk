@@ -1,18 +1,24 @@
 /**
  * Statement splitter for the query editor: the workbench runs each statement
  * separately so every SQL gets its own result tab. Splits on top-level `;`
- * only — quoted strings/identifiers, comments and (pg) dollar-quoted bodies
- * never produce a split. Escapes are dialect-aware: mysql honors backslash
- * escapes and `#` line comments; postgresql uses quote doubling, dollar
- * quoting and `--`/`/* * /` comments only.
+ * only — quoted strings/identifiers, comments and (postgresql) dollar-quoted
+ * bodies never produce a split. Escapes are engine-aware: the mysql family
+ * honors backslash escapes and `#` line comments; postgresql uses quote
+ * doubling, dollar quoting and `--`/`/* * /` comments only; mssql brackets
+ * `[ident]` (with the `]]` escape) hold code that never splits.
  */
-export function splitSqlStatements(sql: string, dialect: 'mysql' | 'postgresql'): string[] {
+import type { SqlEngineId } from '../../domain/models/dbEngines';
+
+const MYSQL_FAMILY: ReadonlySet<string> = new Set(['mysql', 'mariadb']);
+
+export function splitSqlStatements(sql: string, engine: SqlEngineId): string[] {
   const statements: string[] = [];
   let start = 0;
   let i = 0;
   // Whether the current segment holds executable SQL — a segment that is only
   // comments/whitespace (`SELECT 1; -- note\n; SELECT 2`) must not run.
   let hasCode = false;
+  const isMysqlFamily = MYSQL_FAMILY.has(engine);
 
   // Length of a pg dollar-quote tag ($, $tag$) opening at i, or 0.
   const dollarTagLength = (): number => {
@@ -32,7 +38,7 @@ export function splitSqlStatements(sql: string, dialect: 'mysql' | 'postgresql')
       while (i < sql.length && sql[i] !== '\n') i += 1;
       continue;
     }
-    if (dialect === 'mysql' && ch === '#') {
+    if (isMysqlFamily && ch === '#') {
       while (i < sql.length && sql[i] !== '\n') i += 1;
       continue;
     }
@@ -45,7 +51,7 @@ export function splitSqlStatements(sql: string, dialect: 'mysql' | 'postgresql')
       hasCode = true;
       i += 1;
       while (i < sql.length) {
-        if (dialect === 'mysql' && sql[i] === '\\') { i += 2; continue; }
+        if (isMysqlFamily && sql[i] === '\\') { i += 2; continue; }
         if (sql[i] === ch) {
           // Doubled quote = escaped quote, keep scanning.
           if (sql[i + 1] === ch) { i += 2; continue; }
@@ -56,7 +62,21 @@ export function splitSqlStatements(sql: string, dialect: 'mysql' | 'postgresql')
       i += 1;
       continue;
     }
-    if (dialect === 'postgresql') {
+    if (ch === '[') {
+      // T-SQL bracketed identifier: `]]` is the escape, `;` inside never splits.
+      hasCode = true;
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === ']') {
+          if (sql[i + 1] === ']') { i += 2; continue; }
+          break;
+        }
+        i += 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (engine === 'postgresql') {
       const tag = dollarTagLength();
       if (tag) {
         const opener = sql.slice(i, i + tag);

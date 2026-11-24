@@ -37,7 +37,7 @@
 
 ---
 
-<img width="3358" height="1984" alt="image" src="docs/assets/readme/overview.webp" />
+<img width="3456" height="2168" alt="QuollDesk — Redis / PostgreSQL / ターミナルタブ付き SSH ワークスペース" src="docs/assets/readme/overview.webp" />
 
 ---
 
@@ -46,7 +46,7 @@
 
 本プロジェクトは、オープンソースの [NetCatty](https://github.com/binaricat/NetCatty) をベースに拡張したものです。NetCatty の全機能 — SSH ターミナル、SFTP、モニタリング、ワークスペース、内蔵 AI エージェント — は**そのまま維持**されており、そこに**完全なデータベース層を追加**しました：
 
-- 🗄️ **データベース & Redis GUI クライアント** — Redis（スタンドアロン & クラスター）、MySQL、PostgreSQL の 3 種類のワークベンチ。ターミナルと同じウィンドウでタブとして開き、すべての接続に SSH トンネルを設定可能
+- 🗄️ **データベース & Redis GUI クライアント** — Redis（スタンドアロン・クラスター・Sentinel）、MySQL、MariaDB、PostgreSQL、SQLite、SQL Server の 6 種類のワークベンチ。ターミナルと同じウィンドウでタブとして開き、すべての接続に SSH トンネルを設定可能。DBeaver / Navicat からデータベース接続を、Xshell からホストをインポート対応
 - 🧠 **データベース対応 AI** — 内蔵 AI アシスタントが開いているデータベース接続を認識：自然言語で SQL を生成 / 最適化 / 修復し、外部 MCP クライアントへのデータベース公開も可能
 - 🔄 **アップストリームと同期** — QuollDesk の基本機能（ターミナル、SFTP、モニタリング、テーマなど）の動作は変わりません
 
@@ -57,29 +57,42 @@
 <a name="database-clients"></a>
 # 🗄️ データベース & Redis クライアント
 
-> 🚀 **ターミナルワークスペースから離れずにデータを管理。** **Redis**（スタンドアロン & クラスター）、**MySQL**、**PostgreSQL** の完全な GUI クライアントを提供 — 直接接続または SSH トンネルで接続し、データを視覚的に閲覧・編集、スマート補全でクエリ作成、DDL を手書きせずにテーブル設計。
+> 🚀 **ターミナルワークスペースから離れずにデータを管理。** **Redis**（スタンドアロン・クラスター・Sentinel）、**MySQL**、**MariaDB**、**PostgreSQL**、**SQLite**、**SQL Server** の完全な GUI クライアントを提供 — 直接接続または SSH トンネルで接続し、データを視覚的に閲覧・編集、スマート補全でクエリ作成、DDL を手書きせずにテーブル設計。接続はデータベースページでエンジン別にグループ化され、**DBeaver**（`.xml`）や **Navicat**（`.ncx`）からの既存接続インポートにも対応。
+
+<img width="3456" height="2168" alt="エンジン別にグループ化されたデータベース接続" src="docs/assets/readme/db-connections.webp" />
 
 ### 🔴 Redis ワークベンチ
-- **キー閲覧** — ページング付き SCAN キーツリー、db0–15 切り替え（ライブキー数）、タイプバッジ、名前空間グループ化、大量キーの遅延ロード
+- **キー閲覧** — ページング付き SCAN キーツリー、論理 DB 0–65535 切り替え（ライブキー数）、タイプバッジ、名前空間グループ化、大量キーの遅延ロード
+- **サーバー概要** — 接続ごとのダッシュボード：サーバー情報、メモリと断片化率、キースペース統計（キー数 / TTL カバー率）、ライブアクティビティ（毎秒操作数ミニチャート、キャッシュヒット率、クライアント数）
 - **タイプ別エディター** — string / hash / list / set / zset 専用のビューア & エディター。JSON 值は自動整形 + シンタックスハイライト（ハイライト表示のまま編集可能）
+- **ビッグキー分析** — キースペースをタイプ別にスキャンして最大キーを検出し、メモリの热点を特定
 - **キー管理** — キーの作成・リネーム・削除、TTL の表示と編集（ライブカウントダウン）
 - **Pub/Sub** — チャンネルやパターンを購読し、メッセージをリアルタイム表示
 - **コマンドコンソール** — Redis の生コマンドを履歴付きで実行。購読制御コマンドは専用 UI へ誘導
-- **クラスターサポート** — クラスターノード一覧とノード単位のキーアクセス
+- **クラスター & Sentinel** — クラスターノード一覧とノード単位のキーアクセス。Sentinel トポロジー対応
 
-<img width="2800" height="1800" alt="Redis workbench — key tree, db selector and pretty-printed JSON value viewer" src="docs/assets/readme/redis-workbench.webp" />
+<img width="3456" height="2168" alt="Redis ワークベンチ — キーツリー、サーバー概要カードと操作数チャート" src="docs/assets/readme/redis-overview.webp" />
 
-### 🐬 SQL ワークベンチ（MySQL & PostgreSQL）
-- **スキーマツリー** — ユーザーデータベース/テーブル/ビューを一覧（システムスキーマは自動フィルタ）、手動更新対応
-- **データグリッド** — ページング、ソート、複数条件フィルタ；インライン編集はトランザクション方式の**変更を適用**で確定；行追加/削除；FK メタデータとクリックジャンプ
+<img width="3456" height="2168" alt="Redis ワークベンチ — キーツリー、db セレクターと JSON 整形ビューア" src="docs/assets/readme/redis-workbench.webp" />
+
+### 🐬 SQL ワークベンチ（MySQL・MariaDB・PostgreSQL・SQLite・SQL Server）
+- **7 つのワークベンチビュー** — 概要、ワークベンチ、バックアップ/リストア、セッション、**ER 図**、ロック管理、ユーザー & ロール。関心事ごとにビューを分離
+- **スキーマツリー** — データベース/スキーマ、テーブル、ビューを一覧（システムオブジェクトは自動フィルタ）、手動更新対応
+- **データグリッド** — ページング、ソート、複数条件フィルタ、GROUP BY 集計とレコードモード；インライン編集はトランザクション方式の**変更を適用**で確定；行追加/削除はバッチ操作対応；FK メタデータとクリックジャンプ
+- **BLOB ビューア** — バイナリセルを画像 / PDF / 16 進ダンプで表示、テキストは UTF-8・GB18030・CP1252 などのエンコーディングでデコード
 - **インポート & エクスポート** — グリッドとクエリ結果を CSV / JSON / SQL INSERTS でエクスポート；テーブルへの CSV インポートウィザード；SQL バックアップ（データベース全体または単一テーブル、ストリーミング進捗）と `.sql` リストア
-- **SQL エディター** — マルチタブ、複数結果グリッド、クエリ履歴とお気に入りの永続化
+- **SQL エディター** — マルチタブ、複数ステートメントの結果タブ分割、バインド変数（`:name` / `?`）、SQL フォーマット、クエリ履歴とお気に入りの永続化
 - **スマート補完** — 方言対応のキーワード / テーブル / カラム補完（dt-sql-parser）、ライブ構文エラーの波線
 - **EXPLAIN** — エディターからワンクリックで実行計画を表示（MySQL はテーブル、PostgreSQL はテキスト）
-- **テーブルデザイナー** — 視覚的にテーブルを作成・変更。DDL プレビュー + 2 ステップ確認
+- **ER 図** — 自動レイアウトの ER 図。FK リレーションシップ線とカラムコメントをインライン表示；ドラッグで配置、テーブルをクリックしてデータを表示
+- **テーブルデザイナー** — 視覚的にテーブルを作成・変更。方言別のタイプリスト；DBeaver 風の複合インデックスエディター（DESC / NULLS / WHERE、PostgreSQL 式、`USING` 方式）；DDL プレビュー + 2 ステップ確認
+- **ユーザー & ロール** — アカウント・ロール・権限の管理：PostgreSQL はロール属性とメンバーシップ、MySQL は権限差分比較とバッチ付与/取り消し
+- **セッション & ロック** — ライブセッション一覧（強制終了対応）とブロッキング分析のためのロックマネージャー
 - **構造ビュー** — カラム、型、デフォルト値、キーとインデックス、完全な `CREATE TABLE` 定義を表示
 
-<img width="2800" height="1800" alt="SQL workbench — schema tree and data grid with export controls" src="docs/assets/readme/sql-workbench.webp" />
+<img width="3456" height="2168" alt="SQL ワークベンチ — スキーマツリーとデータグリッド" src="docs/assets/readme/sql-workbench.webp" />
+
+<img width="3456" height="2168" alt="FK リレーションシップ線付き ER 図" src="docs/assets/readme/sql-erd.webp" />
 
 ### 🤖 データベース AI & MCP
 - **ワークベンチ AI パネル** — 現在の接続にスコープされたチャット。「AI 最適化 / AI 修復」ボタンでエディターの SQL を自然言語プロンプト化し、結果をワンクリックで反映
@@ -106,13 +119,13 @@
 
 Quoll Agent にサーバーの健康状態を確認させると、適切なコマンドを実行し、出力を分析して明確なサマリーを数秒で返します。
 
-<img width="3302" height="1978" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
 
 #### 🚀 マルチホスト — Docker Swarm クラスター構築
 
 Quoll Agent が 2 台のサーバーにまたがる Docker Swarm クラスターを一つの会話で構築する様子：init、トークン交換、ノード参加をすべて自動処理 — あなたは目標を伝えるだけ。
 
-<img width="3294" height="1974" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
 
 ---
 
@@ -139,6 +152,7 @@ Quoll Agent が 2 台のサーバーにまたがる Docker Swarm クラスター
 
 ### 🗂️ Vault ホスト管理
 - **複数ビュー** — グリッド / リスト / ツリー
+- **インポート** — Xshell（`.xsh`）エクスポートからホストを、DBeaver / Navicat からデータベース接続を取り込み
 - **高速検索** — ホストとグループを素早く検索
 
 ### 🖥️ ターミナルワークスペース
@@ -166,25 +180,25 @@ Quoll Agent が 2 台のサーバーにまたがる Docker Swarm クラスター
 
 ## メインウィンドウ
 
-<img width="3290" height="1988" alt="image" src="docs/assets/readme/main-window.webp" />
+<img width="3456" height="2168" alt="メインウィンドウと接続済み SSH セッション" src="docs/assets/readme/main-window.webp" />
 
-<img width="3324" height="1992" alt="image" src="docs/assets/readme/main-window-terminal.webp" />
+<img width="3456" height="2168" alt="htop を実行するターミナル" src="docs/assets/readme/main-window-terminal.webp" />
 
 ## Vault ビュー
 
-<img width="3292" height="1984" alt="image" src="docs/assets/readme/vault-grid.webp" />
+<img width="3456" height="2168" alt="Vault グリッドビュー" src="docs/assets/readme/vault-grid.webp" />
 
-<img width="3322" height="1998" alt="image" src="docs/assets/readme/vault-list.webp" />
+<img width="3456" height="2168" alt="Vault リストビュー" src="docs/assets/readme/vault-list.webp" />
 
 ## モニタリングビュー
 
-<img width="3364" height="1982" alt="image" src="docs/assets/readme/monitoring.webp" />
+<img width="3456" height="2168" alt="ライブチャート付きモニタリングパネル" src="docs/assets/readme/monitoring.webp" />
 
-<img width="3362" height="1980" alt="image" src="docs/assets/readme/monitoring-columns.webp" />
+<img width="3456" height="2168" alt="メトリック列付きモニタリングリスト" src="docs/assets/readme/monitoring-columns.webp" />
 
 ## 分割ターミナル
 
-<img width="1560" height="871" alt="split" src="docs/assets/readme/split-terminals.webp" />
+<img width="3456" height="2168" alt="分割ターミナル" src="docs/assets/readme/split-terminals.webp" />
 
 ---
 
@@ -317,7 +331,7 @@ npm run pack:linux   # Linux（AppImage + DEB + RPM）
 | スタイリング | Tailwind CSS 4 |
 | SSH/SFTP | ssh2, ssh2-sftp-client |
 | PTY | node-pty |
-| データベース | redis (node-redis), mysql2, pg, dt-sql-parser |
+| データベース | redis (node-redis), mysql2, pg, mssql, node:sqlite, dt-sql-parser, sql-formatter |
 | アイコン | Lucide React |
 
 ---

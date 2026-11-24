@@ -7,6 +7,8 @@ import {
   collectWorkSurfaceHostGroups,
   collectWorkSurfaceHostTags,
   getAppHostEditorLayerStyle,
+  isSqlHostEditorTarget,
+  resolveSqlHostEditorDialect,
   resolveWorkSurfaceHostEditorKind,
 } from './AppHostEditorLayer';
 
@@ -43,6 +45,29 @@ test('local targets use the local shell editor', () => {
     }),
     'local',
   );
+});
+
+test('sql edit routing: every sql engine opens the SQL editor with its own dialect', () => {
+  for (const protocol of ['mysql', 'postgresql', 'mariadb', 'mssql', 'sqlite'] as const) {
+    assert.equal(isSqlHostEditorTarget(protocol), true);
+    assert.equal(resolveSqlHostEditorDialect(protocol), protocol);
+  }
+});
+
+test('sql edit routing: redis and non-db protocols stay on the standard editor', () => {
+  assert.equal(isSqlHostEditorTarget('redis'), false);
+  assert.equal(isSqlHostEditorTarget('ssh'), false);
+  assert.equal(isSqlHostEditorTarget('serial'), false);
+  assert.equal(isSqlHostEditorTarget(undefined), false);
+  assert.equal(resolveSqlHostEditorDialect('redis'), 'mysql');
+});
+
+test('sql edit routing drops the mysql/pg binary coercion', () => {
+  const source = readFileSync(new URL('./AppHostEditorLayer.tsx', import.meta.url), 'utf8');
+  assert.match(source, /isSqlHostEditorTarget\(target\.openedHost\.protocol\)/);
+  assert.match(source, /dialect=\{resolveSqlHostEditorDialect\(target\.openedHost\.protocol\)\}/);
+  assert.doesNotMatch(source, /protocol === 'mysql' \|\| target\.openedHost\.protocol === 'postgresql'/);
+  assert.doesNotMatch(source, /protocol === 'postgresql' \? 'postgresql' : 'mysql'/);
 });
 
 test('new and ssh targets use the standard editor', () => {

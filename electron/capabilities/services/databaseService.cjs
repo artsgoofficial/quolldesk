@@ -12,15 +12,21 @@
 
 const connectionRegistry = require("../../bridges/dbCommon/connectionRegistry.cjs");
 const { errorEnvelope, classifyDriverError, DB_ERROR_CODES, serializeCellValue } = require("../../bridges/dbCommon/resultEnvelope.cjs");
-const { validateReadOnlySql, readOnlyTransaction } = require("../../bridges/dbCommon/readOnlySql.cjs");
+const { validateReadOnlySql, readOnlyTransaction, splitSqlStatements } = require("../../bridges/dbCommon/readOnlySql.cjs");
 const redisBridge = require("../../bridges/redisBridge.cjs");
 const mysqlBridge = require("../../bridges/mysqlBridge.cjs");
 const pgBridge = require("../../bridges/pgBridge.cjs");
+const mssqlBridge = require("../../bridges/mssqlBridge.cjs");
+const sqliteBridge = require("../../bridges/sqliteBridge.cjs");
 
 const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
 const MAX_QUERY_TIMEOUT_MS = 120_000;
 const SQL_MAX_ROWS = 1000; // mirrors the bridges' MAX_ROWS
 const REDIS_VALUE_PAGE = 200;
+
+// Dialects the SQL tool paths accept. mariadb shares the mysql bridge family;
+// mssql/sqlite have their own executors below.
+const SQL_DIALECTS = Object.freeze(["mysql", "mariadb", "postgresql", "mssql", "sqlite"]);
 
 // Tool-domain predicate shared with the renderer-side filter (capabilityTools.ts
 // keeps its own copy — a CJS/TS shared module is not worth the plumbing).
@@ -33,6 +39,8 @@ function createDatabaseService(deps = {}) {
   const redis = deps.redisBridge || redisBridge;
   const mysql = deps.mysqlBridge || mysqlBridge;
   const pg = deps.pgBridge || pgBridge;
+  const mssql = deps.mssqlBridge || mssqlBridge;
+  const sqlite = deps.sqliteBridge || sqliteBridge;
   // Optional per-chat narrowing installed by the mcpServerBridge wiring:
   // chatSessionId -> Set<connectionId>. Absent entry = open connections allowed.
   const getScopedDbConnectionIds = deps.getScopedDbConnectionIds || (() => null);
@@ -96,15 +104,17 @@ function createDatabaseService(deps = {}) {
     return { ok: true, connections };
   }
 
-  // ---- SQL schema metadata (information_schema based, dialect-aware) ----
+  // ---- SQL schema metadata (dialect-aware; information_schema / sys / PRAGMA) ----
 
   async function sqlSchema(params) {
-    const guard = requireOpenConnection(params, ["mysql", "postgresql"]);
+    const guard = requireOpenConnection(params, SQL_DIALECTS);
     if (guard.error) return guard.error;
+    const dialect = guard.entry.dialect;
     try {
-      return guard.entry.dialect === "mysql"
-        ? await sqlSchemaMysql(guard.entry, params)
-        : await sqlSchemaPg(guard.entry, params);
+      if (dialect === "mysql" || dialect === "mariadb") return await sqlSchemaMysql(guard.entry, params);
+      if (dialect === "postgresql") return await sqlSchemaPg(guard.entry, params);
+      if (dialect === "mssql") return await sqlSchemaMssql(guard.entry, params);
+      return await sqlSchemaSqlite(guard.entry, params);
     } catch (err) {
       return fromEnvelope(errorEnvelope(classifyDriverError(err), err?.message || "schema fetch failed"));
     }
@@ -160,10 +170,92 @@ function createDatabaseService(deps = {}) {
     };
   }
 
+  // T-SQL string literal for INFORMATION_SCHEMA comparisons (the schema/table
+  // values come from AI params — never interpolated as bare identifiers).
+  const tsqlLiteral = (v) => "N'" + String(v).replace(/'/g, "''") + "'";
+
+  // mssqlBridge's EXCLUDED_SCHEMAS: system schemas stay out of the default
+  // listing (still reachable via an explicit `schema` param). Single source —
+  // the bridge owns the list, the AI/MCP path reuses it.
+  const MSSQL_SYSTEM_SCHEMAS = mssqlBridge.EXCLUDED_SCHEMAS;
+
+  async function sqlSchemaMssql(entry, params) {
+    const pool = entry.client.pool;
+    const schema = params?.schema ? String(params.schema) : null;
+    const table = params?.table ? String(params.table) : null;
+    if (!table) {
+      const where = schema
+        ? `WHERE TABLE_SCHEMA = ${tsqlLiteral(schema)}`
+        : `WHERE TABLE_SCHEMA NOT IN (${MSSQL_SYSTEM_SCHEMAS.map(tsqlLiteral).join(", ")})`;
+      const res = await mssql.runLimitedQuery(pool,
+        `SELECT TABLE_SCHEMA AS "schema", TABLE_NAME AS "name", TABLE_TYPE AS "kind" FROM INFORMATION_SCHEMA.TABLES ${where} ORDER BY TABLE_SCHEMA, TABLE_NAME`,
+        SQL_MAX_ROWS);
+      return { ok: true, tables: rowsAsObjects(res) };
+    }
+    // No schema param → the session's default schema (SCHEMA_NAME(), usually dbo).
+    const schemaClause = schema ? `TABLE_SCHEMA = ${tsqlLiteral(schema)}` : "TABLE_SCHEMA = SCHEMA_NAME()";
+    const tableLiteral = tsqlLiteral(table);
+    const columnsRes = await mssql.runLimitedQuery(pool,
+      `SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE ${schemaClause} AND TABLE_NAME = ${tableLiteral} ORDER BY ORDINAL_POSITION`,
+      SQL_MAX_ROWS);
+    const pkRes = await mssql.runLimitedQuery(pool,
+      "SELECT ccu.COLUMN_NAME AS column_name FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc " +
+      "JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu ON ccu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME " +
+      "AND ccu.TABLE_SCHEMA = tc.TABLE_SCHEMA AND ccu.TABLE_NAME = tc.TABLE_NAME " +
+      `WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND ${schemaClause} AND tc.TABLE_NAME = ${tableLiteral} ` +
+      "ORDER BY ccu.COLUMN_NAME",
+      SQL_MAX_ROWS);
+    return {
+      ok: true,
+      table,
+      columns: rowsAsObjects(columnsRes),
+      primaryKey: rowsAsObjects(pkRes).map((r) => r.column_name),
+    };
+  }
+
+  async function sqlSchemaSqlite(entry, params) {
+    const db = entry.client.db;
+    const table = params?.table ? String(params.table) : null;
+    const databaseName = entry.meta?.database
+      // The bridge sets meta.database (path.basename) at connect; the split
+      // fallback mirrors it, handling Windows separators too.
+      || String(entry.client?.filePath || "database").split(/[\\/]/).pop();
+    if (!table) {
+      // One "database" (the file) acts as the schema for every object, so the
+      // listing shape matches the information_schema branches.
+      const [segment] = await sqlite.runAll(db,
+        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name");
+      const rows = rowsAsObjects(segment);
+      return {
+        ok: true,
+        tables: rows.map((row) => ({
+          schema: databaseName,
+          name: row.name,
+          kind: String(row.type).toLowerCase() === "view" ? "VIEW" : "BASE TABLE",
+        })),
+      };
+    }
+    // PRAGMA cannot be parameterized — quote the identifier (doubled inner
+    // quotes, the standard SQLite double-quote escape).
+    const quoted = '"' + String(table).replace(/"/g, '""') + '"';
+    // runOne cellifies values: notnull/pk arrive as "0"/"1" strings — coerce.
+    const [pragmaSegment] = await sqlite.runAll(db, `PRAGMA table_info(${quoted})`);
+    const columns = rowsAsObjects(pragmaSegment)
+      .map((c) => ({
+        column_name: c.name,
+        data_type: c.type ?? null,
+        is_nullable: Number(c.notnull) === 0 ? "YES" : "NO",
+        column_default: c.dflt_value ?? null,
+        pk: Number(c.pk) || 0, // 0 = not PK, else 1-based position among PK columns
+      }));
+    const primaryKey = columns.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.column_name);
+    return { ok: true, table, columns, primaryKey };
+  }
+
   // ---- query (read-only, wrapped in a READ ONLY transaction) / execute ----
 
   async function sqlQuery(params) {
-    const guard = requireOpenConnection(params, ["mysql", "postgresql"]);
+    const guard = requireOpenConnection(params, SQL_DIALECTS);
     if (guard.error) return guard.error;
     const entry = guard.entry;
     const dialect = entry.dialect;
@@ -171,10 +263,10 @@ function createDatabaseService(deps = {}) {
     const timeoutMs = clampTimeout(params?.timeoutMs);
     const gate = validateReadOnlySql(dialect, sql);
     if (!gate.ok) return { ok: false, code: gate.code, error: gate.error };
-    const txn = readOnlyTransaction(dialect);
     const startedAt = Date.now();
     try {
-      if (dialect === "mysql") {
+      if (dialect === "mysql" || dialect === "mariadb") {
+        const txn = readOnlyTransaction(dialect);
         const conn = entry.client.conn;
         const exec = (s) => new Promise((resolve, reject) => conn.query(s, (err, result) => (err ? reject(err) : resolve(result))));
         await exec(txn.begin);
@@ -198,7 +290,53 @@ function createDatabaseService(deps = {}) {
           await exec(txn.end).catch(() => {});
         }
       }
+      if (dialect === "mssql") {
+        // mssql's ConnectionPool (min:0/max:10) hands every pool.request() an
+        // arbitrary idle connection — BEGIN/query/ROLLBACK as three separate
+        // pool requests would NOT share a transaction (the batch could land
+        // outside it; the ROLLBACK could leak one elsewhere). runReadOnlyBatch
+        // pins ONE connection via a tedious Transaction (same pattern as the
+        // bridge's applyTableChanges), runs the whole batch on it and always
+        // rolls back in finally: the keyword gate above is the primary write
+        // block (no server-side READ ONLY transaction on mssql) and the
+        // rollback is the backstop.
+        const segments = await mssql.runReadOnlyBatch(entry.client.pool, sql, timeoutMs);
+        const resultSets = segments.map((segment) => ({
+          columns: segment.columns || [],
+          rows: segment.rows || [],
+          rowCount: segment.rows?.length ?? 0,
+          okPacket: segment.okPacket || null,
+          truncated: Boolean(segment.truncated),
+        }));
+        return { ok: true, dialect, resultSets, executionTimeMs: Date.now() - startedAt, readOnly: true };
+      }
+      if (dialect === "sqlite") {
+        // Same gate-primary model as mssql: BEGIN + ROLLBACK backstop around
+        // the (gate-split) statements. runAll is single-statement, so each
+        // gate statement runs on its own call.
+        const txn = readOnlyTransaction(dialect);
+        const db = entry.client.db;
+        await db.exec(txn.begin);
+        try {
+          const segments = gate.statements.flatMap((statement) => sqlite.runAll(db, statement));
+          const resultSets = segments.map((segment) => {
+            const rows = rowsAsObjects(segment);
+            return {
+              columns: segment.columns || [],
+              rows,
+              rowCount: rows.length,
+              okPacket: null,
+              truncated: Boolean(segment.truncated),
+            };
+          });
+          return { ok: true, dialect, resultSets, executionTimeMs: Date.now() - startedAt, readOnly: true };
+        } finally {
+          // db.exec is synchronous (returns undefined) — no .catch chain here.
+          try { db.exec(txn.end); } catch { /* rollback backstop best-effort */ }
+        }
+      }
       const client = entry.client.client;
+      const txn = readOnlyTransaction(dialect);
       await client.query(txn.begin);
       try {
         if (gate.statements.length === 1) {
@@ -238,13 +376,14 @@ function createDatabaseService(deps = {}) {
   }
 
   async function sqlExecute(params) {
-    const guard = requireOpenConnection(params, ["mysql", "postgresql"]);
+    const guard = requireOpenConnection(params, SQL_DIALECTS);
     if (guard.error) return guard.error;
     const entry = guard.entry;
+    const dialect = entry.dialect;
     const sql = String(params?.sql || "").trim();
     if (!sql) return fail(DB_ERROR_CODES.INVALID_PARAMS, "sql is required.");
     try {
-      if (entry.dialect === "mysql") {
+      if (dialect === "mysql" || dialect === "mariadb") {
         const segments = await mysql.runQuery(entry.client.conn, sql, clampTimeout(params?.timeoutMs));
         const resultSets = segments.map((segment) => ({
           columns: (segment.columns || []).map((f) => ({ name: f?.name ?? f?.Field ?? String(f) })),
@@ -254,7 +393,37 @@ function createDatabaseService(deps = {}) {
           insertId: segment.okPacket?.insertId ?? null,
           truncated: Boolean(segment.truncated),
         }));
-        return { ok: true, dialect: "mysql", resultSets };
+        return { ok: true, dialect, resultSets };
+      }
+      if (dialect === "mssql") {
+        const segments = await mssql.runQuery(entry.client.pool, sql, clampTimeout(params?.timeoutMs));
+        const resultSets = segments.map((segment) => ({
+          columns: segment.columns || [],
+          rows: segment.rows || [],
+          rowCount: segment.rows?.length ?? 0,
+          affectedRows: segment.okPacket?.affectedRows ?? null,
+          insertId: null, // tedious exposes no SCOPE_IDENTITY on a plain batch
+          truncated: Boolean(segment.truncated),
+        }));
+        return { ok: true, dialect, resultSets };
+      }
+      if (dialect === "sqlite") {
+        // runAll is single-statement — split the script (same quote/comment
+        // aware splitter as the gate) and run each statement on its own call.
+        const db = entry.client.db;
+        const statements = splitSqlStatements(sql, "sqlite");
+        const segments = statements.flatMap((statement) => sqlite.runAll(db, statement));
+        const resultSets = segments.map((segment) => {
+          const rows = rowsAsObjects(segment);
+          return {
+            columns: segment.columns || [],
+            rows,
+            rowCount: rows.length,
+            affectedRows: segment.affectedRows ?? null,
+            truncated: Boolean(segment.truncated),
+          };
+        });
+        return { ok: true, dialect, resultSets };
       }
       // Direct client.query (not runFullQuery) to keep rowCount/command for DML.
       const res = await entry.client.client.query({ text: sql, values: undefined });

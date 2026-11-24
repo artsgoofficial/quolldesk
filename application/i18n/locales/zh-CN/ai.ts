@@ -742,8 +742,6 @@ export const zhCNAiMessages: Messages = {
   'terminal.layer.dockBottom': '底部',
   'terminal.layer.closePanel': '关闭面板',
   'terminal.layer.closePane': '关闭分屏',
-  'terminal.layer.saveLayoutAsDefault': '将布局保存为默认',
-  'terminal.layer.layoutSavedAsDefault': '布局已保存为默认',
   'terminal.layer.layoutSaveFailed': '布局保存失败',
   'terminal.layer.resizeSplit': '调整分屏大小',
   'terminal.layer.splitHorizontal': '上下分屏',

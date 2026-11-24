@@ -197,6 +197,9 @@ const portForwardingBridge = require("./bridges/portForwardingBridge.cjs");
 const redisDbBridge = require("./bridges/redisBridge.cjs");
 const mysqlDbBridge = require("./bridges/mysqlBridge.cjs");
 const pgDbBridge = require("./bridges/pgBridge.cjs");
+const mariadbDbBridge = require("./bridges/mariadbBridge.cjs");
+const sqliteDbBridge = require("./bridges/sqliteBridge.cjs");
+const mssqlDbBridge = require("./bridges/mssqlBridge.cjs");
 const terminalBridge = require("./bridges/terminalBridge.cjs");
 const sessionLogStreamManager = require("./bridges/sessionLogStreamManager.cjs");
 // crashLogBridge is required at the top of the file (before error handlers)
@@ -627,6 +630,9 @@ const registerBridges = createBridgeRegistrar({
   redisDbBridge,
   mysqlDbBridge,
   pgDbBridge,
+  mariadbDbBridge,
+  sqliteDbBridge,
+  mssqlDbBridge,
   terminalBridge,
   crashLogBridge,
   ptyProcessTree,

@@ -12,7 +12,7 @@ const fs = require("node:fs");
 const registry = require("./dbCommon/connectionRegistry.cjs");
 const { openDbTunnel } = require("./dbCommon/tunnel.cjs");
 const {
-  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue,
+  okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, serializeCellValue, buildTriggerMetas,
 } = require("./dbCommon/resultEnvelope.cjs");
 const {
   createDumpWriter, sqlLiteral, buildInsertStatements,
@@ -185,8 +185,19 @@ async function runLimitedQuery(client, sql, values) {
 
 // values must be forwarded: without them pg uses the simple query protocol
 // and any $1 placeholder fails with "there is no parameter $1".
+//
+// One pg client must not run concurrent queries (node-postgres pipelines them
+// and request/response pairing can misorder under load — observed as hung
+// tableMeta storms when the ER panel and the structure page queried at the
+// same time). A per-client promise chain serializes everything that goes
+// through this helper.
+const fullQueryQueues = new WeakMap();
+
 async function runFullQuery(client, sql, values) {
-  const res = await client.query({ text: sql, values });
+  const prev = fullQueryQueues.get(client) ?? Promise.resolve();
+  const next = prev.then(() => client.query({ text: sql, values }));
+  fullQueryQueues.set(client, next.catch(() => undefined));
+  const res = await next;
   return { rows: res.rows || [], fields: res.fields || [] };
 }
 
@@ -331,6 +342,29 @@ async function runPgBackup({ event, client, connectionId, jobId, scope, schema, 
       for (const idx of indexes) {
         if (idx.indexdef) await writer.write(indexDefStatement(idx.indexdef) + "\n");
       }
+      // FK constraints after indexes (referenced tables exist by then). The
+      // constraintdef carries the full FOREIGN KEY clause including actions.
+      const fks = (await runFullQuery(client,
+        "SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS def " +
+        "FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid " +
+        "JOIN pg_namespace n ON n.oid = rel.relnamespace " +
+        "WHERE con.contype = 'f' AND n.nspname = $1 AND rel.relname = $2 ORDER BY con.conname",
+        [entry.schema, entry.name])).rows;
+      for (const fk of fks) {
+        if (fk.name && fk.def) {
+          await writer.write(`ALTER TABLE ${tbl} ADD CONSTRAINT ${q(fk.name)} ${fk.def};\n`);
+        }
+      }
+      await writer.write("\n");
+      // Triggers last (after data + FKs): INSERTs during restore stay un-fired.
+      const triggers = (await runFullQuery(client,
+        "SELECT tg.tgname AS name, pg_get_triggerdef(tg.oid) AS def FROM pg_trigger tg " +
+        "JOIN pg_class c ON c.oid = tg.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace " +
+        "WHERE n.nspname = $1 AND c.relname = $2 AND NOT tg.tgisinternal ORDER BY tg.tgname",
+        [entry.schema, entry.name])).rows;
+      for (const trg of triggers) {
+        if (trg.def) await writer.write(`${trg.def};\n`);
+      }
       await writer.write("\n");
       tablesDone += 1;
     }
@@ -354,6 +388,25 @@ async function runPgBackup({ event, client, connectionId, jobId, scope, schema, 
       }
     }
 
+    // Routines last (database scope only): CREATE OR REPLACE FUNCTION defs are
+    // self-contained and the restore splitter tolerates $$ bodies. Failure to
+    // read them (permissions) skips the section rather than failing the dump.
+    if (scope === "database") {
+      try {
+        const routines = (await runFullQuery(client,
+          "SELECT p.proname AS name, pg_get_functiondef(p.oid) AS def FROM pg_proc p " +
+          "JOIN pg_namespace n ON n.oid = p.pronamespace " +
+          "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prokind IN ('f', 'p') " +
+          "ORDER BY p.proname")).rows;
+        if (routines.length > 0) {
+          await push({ phase: "routines" });
+          for (const routine of routines) {
+            if (!routine.def) continue;
+            await writer.write(`${routine.def};\n`);
+          }
+        }
+      } catch { /* routine dump is best-effort */ }
+    }
     await writer.end();
     push({ phase: "done", message: `dumped ${tablesDone} table(s) to ${outFile}`, tablesDone });
   } catch (err) {
@@ -451,8 +504,12 @@ function registerHandlers(ipcMain, options = {}) {
     registry.touchConnection(connectionId);
     try {
       // Sequential on purpose: pg deprecates concurrent queries on one client.
+      // col_description via to_regclass(%I.%I) survives odd identifiers and
+      // yields null for comment-less columns (ER panel surfaces it raw).
       const columns = await runFullQuery(entry.client.client,
-        "SELECT column_name, data_type, is_nullable, column_default AS default_value FROM information_schema.columns " +
+        "SELECT column_name, data_type, is_nullable, column_default AS default_value, " +
+        "col_description(to_regclass(format('%I.%I', table_schema, table_name)), ordinal_position) AS comment " +
+        "FROM information_schema.columns " +
         "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position", [schema, table]);
       // PK (columns flagged 'PRI' + constraint name) so the renderer never has
       // to parse DDL to answer "which column is the primary key".
@@ -463,19 +520,35 @@ function registerHandlers(ipcMain, options = {}) {
       const estimate = await runFullQuery(entry.client.client,
         "SELECT reltuples::text AS estimate, c.relkind AS kind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
         "WHERE n.nspname = $1 AND c.relname = $2", [schema, table]);
-      // FK metadata via information_schema (constraint → column usage join),
-      // used by the grid's FK jump-through.
+      // FK metadata via pg_constraint (structural): composite ordered column
+      // lists through conkey/confkey unnest joins, plus the canonical ON
+      // DELETE / ON UPDATE actions (confdeltype/confupdtype codes).
       const foreignKeys = await runFullQuery(entry.client.client,
-        "SELECT kcu.column_name, ccu.table_name AS ref_table, ccu.table_schema AS ref_schema, ccu.column_name AS ref_column " +
-        "FROM information_schema.table_constraints tc " +
-        "JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema " +
-        "JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name AND ccu.table_schema = kcu.table_schema " +
-        "WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2", [schema, table]);
+        "SELECT con.conname AS name, " +
+        "(SELECT array_agg(a.attname ORDER BY k.ord) FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) " +
+        "JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) AS columns, " +
+        "rt.relname AS ref_table, rtn.nspname AS ref_schema, " +
+        "(SELECT array_agg(a.attname ORDER BY k.ord) FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord) " +
+        "JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum) AS ref_columns, " +
+        "CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS on_delete, " +
+        "CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END AS on_update " +
+        "FROM pg_constraint con " +
+        "JOIN pg_class rel ON rel.oid = con.conrelid " +
+        "JOIN pg_namespace n ON n.oid = rel.relnamespace " +
+        "JOIN pg_class rt ON rt.oid = con.confrelid " +
+        "JOIN pg_namespace rtn ON rtn.oid = rt.relnamespace " +
+        "WHERE con.contype = 'f' AND n.nspname = $1 AND rel.relname = $2 ORDER BY con.conname", [schema, table]);
       // Views (plain 'v' and materialized 'm') carry their source as the
       // definition; the regclass text is built with q() quoting, so the only
       // characters inside the single-quoted literal are double quotes and
       // identifiers — a single quote cannot appear. Tables keep ddl: null
       // (their index definitions are already returned above).
+      // Table-level triggers (read-only v1): information_schema.triggers is
+      // the cross-engine common denominator.
+      const triggers = buildTriggerMetas((await runFullQuery(entry.client.client,
+        "SELECT trigger_name AS name, action_timing AS timing, event_manipulation AS event, action_statement AS statement " +
+        "FROM information_schema.triggers WHERE trigger_schema = $1 AND event_object_table = $2 ORDER BY trigger_name",
+        [schema, table])).rows);
       const kind = estimate.rows[0]?.kind;
       let ddl = null;
       if (kind === "v" || kind === "m") {
@@ -487,6 +560,7 @@ function registerHandlers(ipcMain, options = {}) {
         columns: columns.rows.map((c) => ({
           name: c.column_name, type: c.data_type, nullable: c.is_nullable === "YES", defaultValue: c.default_value,
           key: pkSet.has(c.column_name) ? "PRI" : null,
+          comment: c.comment || null,
         })),
         indexes: indexes.rows.map((r) => ({
           name: r.indexname,
@@ -497,8 +571,17 @@ function registerHandlers(ipcMain, options = {}) {
         primaryKey: pkCols.length > 0
           ? { name: pkRows[0]?.constraint_name || null, columns: pkCols }
           : null,
-        foreignKeys: foreignKeys.rows.map((r) => ({ column: r.column_name, refTable: r.ref_table, refSchema: r.ref_schema, refColumn: r.ref_column })),
+        foreignKeys: foreignKeys.rows.map((r) => ({
+          name: r.name,
+          columns: r.columns,
+          refTable: r.ref_table,
+          refSchema: r.ref_schema,
+          refColumns: r.ref_columns,
+          onDelete: r.on_delete,
+          onUpdate: r.on_update,
+        })),
         ddl,
+        triggers,
         rowCountEstimate: Math.max(0, Number(estimate.rows[0]?.estimate ?? 0)),
       });
     } catch (err) {
@@ -618,6 +701,43 @@ function registerHandlers(ipcMain, options = {}) {
   });
 
   // ---- Backup / restore (Wave 6) ----
+
+  // Session manager: live sessions of the connected database (excluding our
+  // own backend) + terminate / cancel. mssql/sqlite semantics differ and live
+  // in their bridges; sqlite has no server sessions at all.
+  ipcMain.handle("quolldesk:pg:sessions", async (_event, { connectionId } = {}) => {
+    const entry = registry.getConnection(connectionId);
+    if (!entry) return errorEnvelope(DB_ERROR_CODES.NOT_CONNECTED, "not connected");
+    registry.touchConnection(connectionId);
+    try {
+      const res = await runFullQuery(entry.client.client,
+        "SELECT pid, usename AS user, application_name AS app, state, " +
+        "COALESCE(ROUND(EXTRACT(EPOCH FROM (now() - backend_start)))::text, '') AS seconds, " +
+        "COALESCE(left(query, 500), '') AS query " +
+        "FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() ORDER BY backend_start");
+      const sessions = res.rows.map((r) => ({
+        id: String(r.pid), user: String(r.user || ''), app: String(r.app || ''),
+        state: String(r.state || ''), seconds: Number(r.seconds || 0), query: String(r.query || ''),
+      }));
+      return okEnvelope({ sessions });
+    } catch (err) {
+      return errorEnvelope(classifyDriverError(err), err?.message || "sessions failed");
+    }
+  });
+
+  ipcMain.handle("quolldesk:pg:killSession", async (_event, { connectionId, pid, cancel } = {}) => {
+    const entry = registry.getConnection(connectionId);
+    if (!entry || !pid) return errorEnvelope(entry ? DB_ERROR_CODES.INVALID_PARAMS : DB_ERROR_CODES.NOT_CONNECTED, entry ? "pid required" : "not connected");
+    registry.touchConnection(connectionId);
+    try {
+      const fn = cancel ? "pg_cancel_backend" : "pg_terminate_backend";
+      const res = await runFullQuery(entry.client.client, `SELECT ${fn}($1::int) AS ok`, [Number(pid)]);
+      const done = res.rows[0]?.ok === true;
+      return done ? okEnvelope({}) : errorEnvelope(DB_ERROR_CODES.QUERY_ERROR, "session not found or already gone");
+    } catch (err) {
+      return errorEnvelope(classifyDriverError(err), err?.message || "kill failed");
+    }
+  });
 
   registerSqlDialogHandlers(ipcMain, "quolldesk:pg");
 

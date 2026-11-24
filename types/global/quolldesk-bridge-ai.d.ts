@@ -1,4 +1,5 @@
 import type { CodebuddyAdvancedOptions } from '../../infrastructure/ai/types';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 
 declare global {
   interface QuollDeskBridge {
@@ -128,7 +129,7 @@ declare global {
     /** Push the open database connections for a chat scope (database AI/MCP tools). */
     aiMcpUpdateDbConnections?(connections: Array<{
       connectionId: string;
-      dialect: 'redis' | 'mysql' | 'postgresql';
+      dialect: 'redis' | SqlEngineId;
       hostname?: string | null;
       port?: number | null;
       database?: string | number | null;

@@ -63,6 +63,13 @@ export function useDatabaseWorkbenchState(params: {
         connectionIdRef.current = result.connectionId;
         setConnectionId(result.connectionId);
         setStatus('connected');
+        // Bootstrap SQL (database connections): run after connect, errors are
+        // toasted but never block the session.
+        if (host.bootstrapSql?.trim() && dialect !== 'redis') {
+          void databaseClient[dialect].query({ connectionId: result.connectionId, sql: host.bootstrapSql })
+            .then(() => undefined)
+            .catch((err) => console.error('[bootstrap] failed:', dbErrorMessage(err)));
+        }
         // Mirror into the AI/MCP scope store so database tools only ever
         // target connections that are currently open (spec §3.3/§4.3), and
         // so the tab's native AI panel can bind to this connection.
@@ -99,6 +106,17 @@ export function useDatabaseWorkbenchState(params: {
     setConnectionId(null);
     setStatus('disconnected');
   }, [dialect]);
+
+  // Forced fresh dial for the top-tab 重新连接 menu item: unlike connect()
+  // (which no-ops on a live connection), an explicit reconnect on a connected
+  // tab must hang up and redial. connect()'s own guards cover the remaining
+  // states (idle/error/disconnected dial straight away; the connecting guard
+  // keeps the in-flight handshake the only dial).
+  const reconnect = useCallback(() => {
+    if (connectingRef.current) return;
+    if (connectionIdRef.current) disconnect();
+    connect();
+  }, [connect, disconnect]);
 
   // autoConnect fires only on mount while idle (initial status is idle).
   useEffect(() => {
@@ -150,5 +168,5 @@ export function useDatabaseWorkbenchState(params: {
     return () => { unsubscribe?.(); };
   }, []);
 
-  return { status, connectionId, errorMessage, connect, disconnect, dialect };
+  return { status, connectionId, errorMessage, connect, disconnect, reconnect, dialect };
 }

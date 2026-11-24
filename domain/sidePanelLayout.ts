@@ -1,3 +1,5 @@
+import { isSqlEngineId } from './models/dbEngines';
+
 export type BuiltinSidePanelTool =
   | 'sftp'
   | 'browser'
@@ -12,6 +14,48 @@ export type SidePanelTool = BuiltinSidePanelTool | `plugin-view:${string}`;
 
 export function isPluginSidePanelTool(value: unknown): value is `plugin-view:${string}` {
   return typeof value === 'string' && value.length <= 256 && /^plugin-view:[A-Za-z0-9_.-]+$/.test(value);
+}
+
+/**
+ * Side panel panes that transfer or inspect remote files. They need a
+ * file-capable transport (local mount, SSH or Mosh) behind the session.
+ */
+export const FILE_BOUND_SIDE_PANEL_TOOLS: ReadonlySet<BuiltinSidePanelTool> = new Set([
+  'sftp',
+  'browser',
+]);
+
+/**
+ * Side panel panes that need a shell behind the session (command runner,
+ * command history, system stats). They have no meaning on database workbench
+ * tabs and must not be offered there.
+ */
+export const TERMINAL_BOUND_SIDE_PANEL_TOOLS: ReadonlySet<BuiltinSidePanelTool> = new Set([
+  'scripts',
+  'history',
+  'system',
+]);
+
+function canServeFilesOverProtocol(protocol: string): boolean {
+  return protocol === 'local' || protocol === 'ssh' || protocol === 'mosh';
+}
+
+/**
+ * Availability of a side panel tool for a session protocol. File panes need a
+ * file-capable transport, command panes exist only off the database workbench
+ * (Redis + SQL engines), and theme/notes/AI/plugins are available everywhere.
+ */
+export function sidePanelToolAvailableForProtocol(
+  tool: SidePanelTool,
+  protocol: string | null | undefined,
+): boolean {
+  const proto = protocol ?? 'ssh';
+  const builtin = tool as BuiltinSidePanelTool;
+  if (FILE_BOUND_SIDE_PANEL_TOOLS.has(builtin)) return canServeFilesOverProtocol(proto);
+  if (TERMINAL_BOUND_SIDE_PANEL_TOOLS.has(builtin)) {
+    return !(proto === 'redis' || isSqlEngineId(proto));
+  }
+  return true;
 }
 
 export type SidePanelSplitDirection = 'horizontal' | 'vertical';

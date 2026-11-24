@@ -70,9 +70,11 @@ test('getVaultHostRowSubtitle keeps user@host for remote hosts', () => {
     getVaultHostRowSubtitle({ protocol: 'ssh', username: 'root', hostname: 'example.com' }),
     'root@example.com',
   );
+  // Blank username must not render a bare "@" — the hostname alone avoids
+  // duplicating the card title on unnamed hosts.
   assert.equal(
     getVaultHostRowSubtitle({ protocol: 'telnet', username: '', hostname: '10.0.0.1' }),
-    '@10.0.0.1',
+    '10.0.0.1',
   );
 });
 
@@ -92,3 +94,41 @@ test('clearing the configured executable does not pass its old custom args to th
   assert.equal(effective.localShell, '');
   assert.equal(effective.localShellArgs, undefined);
 });
+
+test('getVaultHostRowSubtitle omits the @ when username is blank', () => {
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: '', hostname: '2.24.203.225' }),
+    '2.24.203.225',
+  );
+});
+
+test('getVaultHostRowSubtitle appends non-default ports', () => {
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: 'root', hostname: 'example.com', port: 2222 }),
+    'root@example.com:2222',
+  );
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: 'root', hostname: 'example.com', port: 22 }),
+    'root@example.com',
+  );
+});
+test('unnamed hosts fall back to tags / port instead of repeating the address', () => {
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: '', hostname: '1.2.3.4', label: '1.2.3.4', tags: ['prod', 'us-east'] }),
+    'prod · us-east',
+  );
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: '', hostname: '1.2.3.4', label: '1.2.3.4', tags: [], port: 2222 }),
+    '1.2.3.4:2222',
+  );
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: '', hostname: '1.2.3.4', label: '1.2.3.4', tags: [] }),
+    '',
+  );
+  // a named host never triggers the fallback
+  assert.equal(
+    getVaultHostRowSubtitle({ protocol: 'ssh', username: '', hostname: '10.0.0.5', label: 'edge', tags: [] }),
+    '10.0.0.5',
+  );
+});
+

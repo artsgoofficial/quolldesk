@@ -23,7 +23,7 @@ const errorEnvelope = (code, message, extra = undefined) => ({
 const CODE_PATTERNS = [
   { test: (e) => e?.code === "ECONNREFUSED" || e?.code === "ENOTFOUND" || e?.code === "EHOSTUNREACH" || e?.code === "ECONNRESET", code: DB_ERROR_CODES.NETWORK_UNREACHABLE },
   { test: (e) => e?.code === "ETIMEDOUT", code: DB_ERROR_CODES.CONNECT_TIMEOUT },
-  { test: (e) => /NOAUTH|WRONGPASS|Access denied for user|password authentication failed|Authentication failed|28P01|28000/i.test(String(e?.message || "")), code: DB_ERROR_CODES.AUTH_FAILED },
+  { test: (e) => /NOAUTH|WRONGPASS|Access denied for user|Login failed for user|password authentication failed|Authentication failed|28P01|28000/i.test(String(e?.message || "")), code: DB_ERROR_CODES.AUTH_FAILED },
   { test: (e) => /ER_ACCESS_DENIED_ERROR|access denied/i.test(String(e?.message || "")) , code: DB_ERROR_CODES.PERMISSION_DENIED },
   { test: (e) => /certificate|ssl|tls/i.test(String(e?.message || "")) , code: DB_ERROR_CODES.TLS_FAILED },
   { test: (e) => /syntax error|SQL syntax|ER_PARSE_ERROR|ER_NO_SUCH_TABLE|does not exist|relation .* does not exist|Unknown column/i.test(String(e?.message || "")), code: DB_ERROR_CODES.QUERY_ERROR },
@@ -66,7 +66,19 @@ function serializeCellValue(value) {
   return text.length > CELL_TRUNCATE_BYTES ? text.slice(0, CELL_TRUNCATE_BYTES) : text;
 }
 
+/**
+ * Canonical read-only trigger metadata shape (SqlTriggerMeta): every field is
+ * a plain string regardless of what the driver returned. One mapper for the
+ * engines whose tableMeta carries triggers (mysql family / pg / mssql) —
+ * adding a field is one edit, not three.
+ */
+function buildTriggerMetas(rows) {
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    name: String(r.name || ''), timing: String(r.timing || ''), event: String(r.event || ''), statement: String(r.statement || ''),
+  }));
+}
+
 module.exports = {
   okEnvelope, errorEnvelope, DB_ERROR_CODES, classifyDriverError, sanitizeMessage,
-  serializeCellValue,
+  serializeCellValue, buildTriggerMetas,
 };

@@ -1239,3 +1239,173 @@ test("applyVaultHostImport can preserve distinct sessions with the same endpoint
   assert.equal(merged.skippedExistingCount, 0);
   assert.equal(merged.hosts.length, 3);
 });
+
+const xshellSession = (overrides: Record<string, string> = {}) => [
+  "[Connection]",
+  `Host=${overrides.Host ?? "shell.example.com"}`,
+  `Port=${overrides.Port ?? "2222"}`,
+  `Protocol=${overrides.Protocol ?? "SSH"}`,
+  overrides.Description !== undefined ? `Description=${overrides.Description}` : "Description=",
+  "[Connection\\Authentication]",
+  `Method=${overrides.Method ?? "PASSWORD"}`,
+  `UserName=${overrides.UserName ?? "ops"}`,
+  overrides.UserKey ? `UserKey=${overrides.UserKey}` : "UserKey=",
+  "Password=eNCryptedPlaceholder==",
+  "",
+].join("\r\n");
+
+test("Xshell import reads host, port, username, label, and notes", () => {
+  const result = importVaultHostsFromText("xshell", xshellSession({
+    Description: "Web bastion",
+  }), { fileName: "Bastion.xsh" });
+
+  assert.deepEqual(result.stats, { parsed: 1, imported: 1, skipped: 0, duplicates: 0 });
+  const host = result.hosts[0];
+  assert.equal(host?.label, "Bastion");
+  assert.equal(host?.hostname, "shell.example.com");
+  assert.equal(host?.port, 2222);
+  assert.equal(host?.username, "ops");
+  assert.equal(host?.protocol, "ssh");
+  assert.equal(host?.notes, "Web bastion");
+});
+
+test("Xshell import never imports the encrypted password", () => {
+  const result = importVaultHostsFromText("xshell", xshellSession());
+  assert.equal(result.hosts[0]?.password ?? "", "");
+  assert.equal(result.hosts[0]?.authMethod, undefined);
+});
+
+test("Xshell import warns when the session uses an Xshell-managed user key", () => {
+  const result = importVaultHostsFromText("xshell", xshellSession({
+    Method: "PUBLIC_KEY",
+    UserKey: "My Deploy Key",
+  }));
+
+  assert.equal(result.hosts.length, 1);
+  assert.match(result.issues[0]?.message ?? "", /My Deploy Key/);
+});
+
+test("Xshell import supports telnet and defaults its port", () => {
+  const result = importVaultHostsFromText("xshell", xshellSession({
+    Protocol: "TELNET",
+    Port: "",
+  }));
+  assert.equal(result.hosts[0]?.protocol, "telnet");
+  assert.equal(result.hosts[0]?.port, 23);
+});
+
+test("Xshell import skips unsupported protocols and sessions without a host", () => {
+  const serial = importVaultHostsFromText("xshell", xshellSession({ Protocol: "SERIAL" }));
+  assert.equal(serial.stats.imported, 0);
+  assert.equal(serial.stats.skipped, 1);
+
+  const noHost = importVaultHostsFromText("xshell", xshellSession({ Host: "" }));
+  assert.equal(noHost.stats.skipped, 1);
+  assert.match(noHost.issues[0]?.message ?? "", /missing host/i);
+});
+
+test("vault import auto-detects Xshell sessions", () => {
+  assert.equal(detectVaultImportFormat(xshellSession()), "xshell");
+  assert.equal(detectVaultImportFormat("[Connection\\Authentication]\r\nMethod=PASSWORD"), null);
+});
+
+const dbeaverConnectionsXml = [
+  '<?xml version="1.0" encoding="UTF-8"?>',
+  '<connections>',
+  '  <datasource id="mysql-prod" provider="mysql" driver="mysql8">',
+  '    <name>Prod MySQL</name>',
+  '    <provider-properties>',
+  '      <entry key="server">prod.example.com</entry>',
+  '      <entry key="port">3307</entry>',
+  '      <entry key="database">shop</entry>',
+  '      <entry key="user">root</entry>',
+  '    </provider-properties>',
+  '  </datasource>',
+  '  <datasource id="pg-local" provider="postgresql" driver="postgresql">',
+  '    <name>Local PG &amp; Analytics</name>',
+  '    <provider-properties>',
+  '      <property name="host">127.0.0.1</property>',
+  '      <property name="port">5432</property>',
+  '      <property name="database">analytics</property>',
+  '      <property name="user">postgres</property>',
+  '    </provider-properties>',
+  '  </datasource>',
+  '  <datasource id="sqlite-file" provider="sqlite" driver="sqlite">',
+  '    <name>Notes DB</name>',
+  '    <provider-properties>',
+  '      <property name="database">/data/notes.db</property>',
+  '    </provider-properties>',
+  '  </datasource>',
+  '  <datasource id="oracle-x" provider="oracle" driver="oracle_thin">',
+  '    <name>Legacy</name>',
+  '    <provider-properties>',
+  '      <property name="host">ora.example.com</property>',
+  '    </provider-properties>',
+  '  </datasource>',
+  '</connections>',
+].join("\n");
+
+const navicatNcx = [
+  '<?xml version="1.0" encoding="utf-8"?>',
+  '<Connections>',
+  '  <Connection ConnectionType="MYSQL" ConnName="主库" Host="10.0.0.5" Port="3306" UserName="root" Database="shop" />',
+  '  <Connection ConnectionType="POSTGRESQL" ConnName="pg-warehouse" Host="pg.example.com" Port="5433" UserName="analytics" Database="warehouse">',
+  '    <Ssh Host="bastion.example.com" Port="22" UserName="ops" />',
+  '  </Connection>',
+  '  <Connection ConnectionType="MSSQL" ConnName="mssql-report" Host="sql.example.com" Port="1433" UserName="sa" Database="Reporting" />',
+  '  <Connection ConnectionType="ORACLE" ConnName="legacy-ora" Host="ora.example.com" Port="1521" />',
+  '</Connections>',
+].join("\n");
+
+test("DBeaver import maps providers, host/server keys, and SQLite file paths", () => {
+  const result = importVaultHostsFromText("dbeaver", dbeaverConnectionsXml);
+
+  assert.deepEqual(result.stats, { parsed: 4, imported: 3, skipped: 1, duplicates: 0 });
+  const mysql = result.hosts.find((host) => host.protocol === "mysql");
+  assert.equal(mysql?.label, "Prod MySQL");
+  assert.equal(mysql?.hostname, "prod.example.com");
+  assert.equal(mysql?.port, 3307);
+  assert.equal(mysql?.username, "root");
+  assert.equal(mysql?.sqlConfig?.database, "shop");
+
+  const postgres = result.hosts.find((host) => host.protocol === "postgresql");
+  assert.equal(postgres?.label, "Local PG & Analytics");
+  assert.equal(postgres?.hostname, "127.0.0.1");
+  assert.equal(postgres?.port, 5432);
+  assert.equal(postgres?.sqlConfig?.database, "analytics");
+
+  const sqlite = result.hosts.find((host) => host.protocol === "sqlite");
+  assert.equal(sqlite?.hostname, "/data/notes.db");
+  assert.equal(sqlite?.port, undefined);
+  assert.equal(sqlite?.sqlConfig?.filePath, "/data/notes.db");
+
+  assert.match(result.issues[0]?.message ?? "", /unsupported provider "oracle"/);
+});
+
+test("Navicat import maps connection types, skips unknown ones, and ignores SSH hops", () => {
+  const result = importVaultHostsFromText("navicat", navicatNcx);
+
+  assert.deepEqual(result.stats, { parsed: 4, imported: 3, skipped: 1, duplicates: 0 });
+  const mysql = result.hosts.find((host) => host.protocol === "mysql");
+  assert.equal(mysql?.label, "主库");
+  assert.equal(mysql?.hostname, "10.0.0.5");
+  assert.equal(mysql?.port, 3306);
+  assert.equal(mysql?.sqlConfig?.database, "shop");
+
+  const postgres = result.hosts.find((host) => host.protocol === "postgresql");
+  assert.equal(postgres?.hostname, "pg.example.com");
+  assert.equal(postgres?.port, 5433);
+  assert.equal(postgres?.tunnelHostId, undefined);
+
+  const mssql = result.hosts.find((host) => host.protocol === "mssql");
+  assert.equal(mssql?.label, "mssql-report");
+  assert.equal(mssql?.port, 1433);
+
+  assert.match(result.issues[0]?.message ?? "", /unsupported type "ORACLE"/);
+});
+
+test("vault import auto-detects DBeaver and Navicat files", () => {
+  assert.equal(detectVaultImportFormat(dbeaverConnectionsXml), "dbeaver");
+  assert.equal(detectVaultImportFormat(navicatNcx), "navicat");
+  assert.equal(detectVaultImportFormat('<?xml version="1.0"?><settings><item/></settings>'), null);
+});

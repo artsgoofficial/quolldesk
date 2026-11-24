@@ -1,3 +1,4 @@
+import { sidePanelToolAvailableForProtocol } from "./sidePanelLayout";
 import type { TerminalSession } from "./models";
 
 export const TERMINAL_SIDE_PANEL_AUTO_OPEN_TABS = [
@@ -57,9 +58,13 @@ export function resolveSessionSidePanelAutoOpen({
   const isLocal = protocol === "local";
   const sftpAvailable = isLocal || protocol === "ssh" || protocol === "mosh";
   if (session.autoOpenSidePanel === "sftp" && sftpAvailable) return "sftp";
+  const selectedTab = isLocal ? localTab : terminalTab;
+  // Database workbench tabs have no shell: terminal-bound panes cannot open
+  // there, not even through a stale auto-open preference.
+  if (!sidePanelToolAvailableForProtocol(selectedTab, protocol)) return null;
   return resolveTerminalSidePanelAutoOpen({
     enabled: isLocal ? localEnabled : terminalEnabled,
-    selectedTab: isLocal ? localTab : terminalTab,
+    selectedTab,
     sftpAvailable,
   }) ?? (legacySftpEnabled && !isLocal && sftpAvailable ? "sftp" : null);
 }

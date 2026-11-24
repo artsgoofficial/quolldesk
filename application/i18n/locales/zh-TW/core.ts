@@ -420,6 +420,8 @@ export const zhTWCoreMessages: Messages = {
 
   // Settings > Application
   'settings.application.checkUpdates': '檢查更新',
+  'settings.application.section.about': '關於',
+  'settings.application.section.community': '參與貢獻',
   'settings.application.reportProblem': '反饋問題',
   'settings.application.reportProblem.subtitle': '產生預填的 GitHub issue',
   'settings.application.community': '社群',
@@ -803,7 +805,7 @@ Vaults 分頁維持扁平，不使用這塊背景。
   'vault.hosts.header.live': '{count} 個線上',
 
   // Vault hosts header/actions
-  'vault.hosts.search.placeholder': '查詢主機或 ssh user@hostname / ssh -p 2222 user@hostname…',
+  'vault.hosts.search.placeholder': '尋找主機或貼上 ssh 命令…',
   'vault.hosts.connect': '連線',
   'vault.hosts.openSftp': '開啟 SFTP',
   'vault.view.grid': '網格',
@@ -829,6 +831,9 @@ Vaults 分頁維持扁平，不使用這塊背景。
   'vault.hosts.copyCredentials': '複製帳密資訊',
   'vault.hosts.copyCredentials.toast.success': '帳密資訊已複製到剪貼簿',
   'vault.hosts.copyCredentials.toast.noPassword': '該主機未儲存密碼',
+  'vault.hosts.copyConnectionString': '複製連線字串',
+  'vault.hosts.copyConnectionString.toast.success': '連線字串已複製到剪貼簿',
+  'vault.hosts.copyConnectionString.toast.error': '複製連線字串失敗',
   'vault.hosts.multiSelect': '多選',
   'vault.hosts.selected': '已選擇 {count} 項',
   'vault.hosts.selectedSummary': '已選擇 {hosts} 個主機和 {groups} 個群組',
@@ -879,6 +884,11 @@ Vaults 分頁維持扁平，不使用這塊背景。
   'vault.import.finalshell.folderDesc': '匯入全部 JSON 連線，並保留目錄結構。',
   'vault.import.finalshell.file': '單一連線檔案',
   'vault.import.finalshell.fileDesc': '匯入一個 FinalShell JSON 連線。',
+  'vault.import.xshell.promptTitle': '從 Xshell 匯入',
+  'vault.import.xshell.folder': 'Sessions 資料夾',
+  'vault.import.xshell.folderDesc': '匯入全部 .xsh 工作階段，並保留目錄結構。',
+  'vault.import.xshell.file': '單一工作階段檔案',
+  'vault.import.xshell.fileDesc': '匯入一個 Xshell .xsh 工作階段。',
   'vault.import.csv.tip': '批次匯入：可使用 CSV 模板填寫後匯入。',
   'vault.import.csv.downloadTemplate': '下載 CSV 模板',
   'vault.import.toast.start': '正在從 {format} 匯入...',
@@ -1061,6 +1071,7 @@ Vaults 分頁維持扁平，不使用這塊背景。
   'sftp.copyToOtherPane.unavailable': '請開啟雙欄 SFTP 檔案管理，並連線目標側後再複製檔案。',
   'sftp.copyCurrentPath': '複製目前路徑',
   'sftp.copyCurrentPath.success': '已複製目前路徑',
+  'common.copied': '已複製',
   'sftp.copyCurrentPath.error': '無法複製目前路徑',
   'sftp.viewMode.label': '檢視模式',
   'sftp.viewMode.list': '列表檢視',

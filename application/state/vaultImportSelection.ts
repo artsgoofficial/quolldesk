@@ -2,6 +2,7 @@ import type {
   VaultImportDestination,
   VaultImportFormat,
 } from "../../domain/vaultImport";
+import { isBatchFolderFormat } from "../../domain/vaultImport";
 
 export type VaultImportDestinationMode = "preserve" | "existing" | "new";
 
@@ -12,8 +13,7 @@ export function getVaultImportPickerMode(
   directory: boolean;
   multiple: boolean;
 } {
-  const isBatchFolder = (format === "securecrt" || format === "finalshell")
-    && source === "folder";
+  const isBatchFolder = isBatchFolderFormat(format) && source === "folder";
   return {
     directory: isBatchFolder,
     multiple: isBatchFolder,
@@ -25,9 +25,7 @@ export function selectVaultImportFiles(
   files: ArrayLike<File>,
 ): File[] {
   const selected = Array.from(files);
-  return format === "securecrt" || format === "finalshell"
-    ? selected
-    : selected.slice(0, 1);
+  return isBatchFolderFormat(format) ? selected : selected.slice(0, 1);
 }
 
 const normalizeGroup = (raw: string | undefined): string | undefined => {

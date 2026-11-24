@@ -2,6 +2,8 @@ import { MouseEvent,useCallback,useEffect,useMemo,useRef,useState } from 'react'
 import { flushSync } from 'react-dom';
 import { ConnectionLog,Host,SerialConfig,Snippet,TerminalSession,Workspace,WorkspaceNode,WorkspaceViewMode } from '../../domain/models';
 import { isDbProtocol } from '../../domain/models/database';
+import { findExistingDbSession } from '../../domain/hostOpenSession';
+import { terminalReconnectRegistry } from './terminalReconnectRegistry';
 import { addLogView, getLogViewTabId, removeLogView, type LogView } from './logViewState';
 import {
   createDatabaseSession,
@@ -579,6 +581,19 @@ export const useSessionState = ({
 
   const connectToHost = useCallback((host: Host, options?: { hidden?: boolean }) => {
     const hidden = options?.hidden === true;
+    // Database workbenches are one-per-host: a second connect (nav tree
+    // double-click) focuses the existing tab instead of stacking a duplicate,
+    // and a dropped connection is redialled through the reconnect registry
+    // (the request queues until the workbench re-registers). Hidden/background
+    // opens (silent MCP sessions, restores) still create their own session.
+    if (!hidden && isDbProtocol(host.protocol)) {
+      const existing = findExistingDbSession(sessionsRef.current, host.id);
+      if (existing) {
+        setActiveTabId(existing.id);
+        if (existing.status === 'disconnected') terminalReconnectRegistry.request(existing.id);
+        return existing.id;
+      }
+    }
     const newSession = isDbProtocol(host.protocol)
       ? createDatabaseSession(crypto.randomUUID(), host)
       : createHostTerminalSession(crypto.randomUUID(), host);

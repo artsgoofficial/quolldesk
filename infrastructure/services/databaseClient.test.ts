@@ -50,6 +50,69 @@ describe('resolveDbConnectArgs', () => {
   });
 });
 
+describe('resolveDbConnectArgs port defaults', () => {
+  it('mysql portless host falls back to dialect default 3306', () => {
+    const host = { hostname: 'db.internal', username: 'root', password: 'pw' } as unknown as Host;
+    const args = resolveDbConnectArgs({ host, dialect: 'mysql' });
+    assert.equal(args.port, 3306);
+  });
+});
+
+describe('resolveDbConnectArgs sqlite', () => {
+  it('sqlite: hostname is the file path, port omitted, filePath passes through', () => {
+    const args = resolveDbConnectArgs({
+      host: { hostname: '/tmp/a.db', sqlConfig: { filePath: '/tmp/a.db' } } as unknown as Host,
+      dialect: 'sqlite',
+    });
+    assert.equal(args.port, undefined);
+    assert.equal(args.config.filePath, '/tmp/a.db');
+  });
+});
+
+describe('databaseClient registry-driven SQL engines', () => {
+  it('mariadb.test invokes testMariadbConnection', async () => {
+    canned = { testMariadbConnection: { ok: true, data: { latencyMs: 7 } } };
+    const res = await databaseClient.mariadb.test({ hostname: 'db' } as never);
+    assert.deepEqual(res, { latencyMs: 7 });
+    assert.equal(calls.at(-1)?.channel, 'testMariadbConnection');
+    canned = {};
+  });
+  it('sqlite.query invokes querySqlite with the unified args shape', async () => {
+    canned = { querySqlite: { ok: true, data: { resultSets: [], executionTimeMs: 1, truncated: false } } };
+    const args = { connectionId: 'c1', sql: 'select 1', values: [1], timeoutMs: 2000 };
+    const res = await databaseClient.sqlite.query(args);
+    assert.equal(res.executionTimeMs, 1);
+    assert.equal(calls.at(-1)?.channel, 'querySqlite');
+    assert.deepEqual(calls.at(-1)?.args[0], args);
+    canned = {};
+  });
+  it('mssql.backup invokes backupMssql', async () => {
+    canned = { backupMssql: { ok: true, data: { jobId: 'j1' } } };
+    const args = { connectionId: 'c1', scope: 'database' as const, outFile: '/tmp/b.bak' };
+    const res = await databaseClient.mssql.backup(args);
+    assert.deepEqual(res, { jobId: 'j1' });
+    assert.equal(calls.at(-1)?.channel, 'backupMssql');
+    assert.deepEqual(calls.at(-1)?.args[0], args);
+    canned = {};
+  });
+  it('regression: mysql.query still maps to queryMysql (timeoutMs passthrough)', async () => {
+    canned = { queryMysql: { ok: true, data: { resultSets: [], executionTimeMs: 2, truncated: false } } };
+    const args = { connectionId: 'c1', sql: 'select 1', timeoutMs: 500 };
+    await databaseClient.mysql.query(args);
+    assert.equal(calls.at(-1)?.channel, 'queryMysql');
+    assert.deepEqual(calls.at(-1)?.args[0], args);
+    canned = {};
+  });
+  it('regression: postgresql.query still maps to queryPg (values passthrough)', async () => {
+    canned = { queryPg: { ok: true, data: { resultSets: [], executionTimeMs: 3, truncated: false } } };
+    const args = { connectionId: 'c1', sql: 'select 1', values: ['x'] };
+    await databaseClient.postgresql.query(args);
+    assert.equal(calls.at(-1)?.channel, 'queryPg');
+    assert.deepEqual(calls.at(-1)?.args[0], args);
+    canned = {};
+  });
+});
+
 describe('databaseClient unwraps envelopes', () => {
   it('throws DbClientError on ok:false', async () => {
     canned = { getMysqlSchemaTree: { ok: false, error: { code: 'NOT_CONNECTED', message: 'nope' } } };

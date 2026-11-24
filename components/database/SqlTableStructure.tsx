@@ -1,14 +1,19 @@
 import React, { useEffect, useState } from 'react';
+import { Copy, Table2 } from 'lucide-react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { SqlTableMeta } from '../../types/global/quolldesk-bridge-database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { toast } from '../ui/toast';
+import EmptyState from '../EmptyState';
 
 interface SqlTableStructureProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   table: string | null;
   schema?: string;
   refreshToken?: number;
@@ -46,7 +51,7 @@ const SqlTableStructure: React.FC<SqlTableStructureProps> = ({ connectionId, dia
   }, [connectionId, client, table, schema, refreshToken]);
 
   if (!table) {
-    return <div className="p-4 text-sm text-muted-foreground">{t('db.workbench.noSelection')}</div>;
+    return <EmptyState icon={<Table2 size={30} />} title={t('db.workbench.noSelection')} />;
   }
 
   return (
@@ -78,7 +83,9 @@ const SqlTableStructure: React.FC<SqlTableStructureProps> = ({ connectionId, dia
               <tr key={c.name} className="border-b border-border/30 hover:bg-foreground/5">
                 <td className="px-2 py-1 font-mono">{c.name}</td>
                 <td className="px-2 py-1 text-muted-foreground font-mono">{c.type}</td>
-                <td className="px-2 py-1 text-muted-foreground">{c.nullable ? '✓' : ''}</td>
+                <td className="px-2 py-1">{c.nullable
+                  ? <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-normal">{t('db.workbench.keyMeta.nullable')}</Badge>
+                  : ''}</td>
                 <td className="px-2 py-1 font-mono break-all max-w-[240px]">
                   {c.defaultValue == null ? '' : String(c.defaultValue)}
                 </td>
@@ -107,9 +114,31 @@ const SqlTableStructure: React.FC<SqlTableStructureProps> = ({ connectionId, dia
             </ul>
           </>
         )}
+        {meta !== null && (meta.triggers?.length ?? 0) > 0 && (
+          <>
+            <div className="px-3 pt-3 pb-1 text-xs font-medium text-foreground/80">{t('db.workbench.section.triggers')}</div>
+            <ul className="px-3 pb-2 space-y-1">
+              {meta.triggers.map((trg) => (
+                <li key={trg.name} className="text-xs font-mono break-all">
+                  <span className="text-foreground">{trg.name}</span>
+                  {(trg.timing || trg.event) && (
+                    <span className="text-muted-foreground"> ({[trg.timing, trg.event].filter(Boolean).join(' ')})</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
         {meta?.ddl && (
           <>
-            <div className="px-3 pt-3 pb-1 text-xs font-medium text-foreground/80">{t('db.structure.definition')}</div>
+            <div className="px-3 pt-3 pb-1 text-xs font-medium text-foreground/80 inline-flex items-center gap-2">
+              {t('db.structure.definition')}
+              <button type="button" aria-label={t('common.copy')} title={t('common.copy')}
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => void navigator.clipboard.writeText(meta.ddl ?? '').then(() => toast.success(t('common.copied'))).catch(() => {})}>
+                <Copy size={12} />
+              </button>
+            </div>
             <pre className="mx-3 mb-4 text-xs font-mono whitespace-pre-wrap break-words text-muted-foreground border border-border/40 rounded p-2">{meta.ddl}</pre>
           </>
         )}

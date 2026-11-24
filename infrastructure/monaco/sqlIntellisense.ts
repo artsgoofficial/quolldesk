@@ -13,7 +13,13 @@ import type { Monaco } from '@monaco-editor/react';
  *    debounced validation attachment (red squiggles).
  */
 
-export type SqlDialect = 'mysql' | 'postgresql';
+/**
+ * Parser-facing SQL dialects. 'mysql'/'postgresql' map onto the dedicated
+ * dt-sql-parser ANTLR parsers; 'generic' is the fallback for engines without
+ * one (mssql/sqlite — registry completionDialect) and loads the shared
+ * GenericSQL parser.
+ */
+export type SqlDialect = 'mysql' | 'postgresql' | 'generic';
 
 /** Structural slice of a dt-sql-parser parser instance (MySQL / PostgreSQL). */
 export interface SqlParserLike {
@@ -236,7 +242,7 @@ export function loadSqlParser(dialect: SqlDialect): Promise<SqlParserLike> {
   let promise = parserPromises.get(dialect);
   if (!promise) {
     promise = import('dt-sql-parser').then((module) => {
-      const Impl = dialect === 'mysql' ? module.MySQL : module.PostgreSQL;
+      const Impl = dialect === 'mysql' ? module.MySQL : dialect === 'generic' ? module.GenericSQL : module.PostgreSQL;
       return new Impl() as SqlParserLike;
     });
     promise.catch(() => parserPromises.delete(dialect));

@@ -2,8 +2,10 @@ import { PlugZap, RefreshCw } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host, TerminalSession } from '../../domain/models';
-import { resolveDbSessionTabStatus } from '../../domain/models/database';
+import { dbHostDatabaseName, resolveDbSessionTabStatus } from '../../domain/models/database';
+import { SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
 import { useDatabaseWorkbenchState } from '../../application/state/useDatabaseWorkbenchState';
+import { terminalReconnectRegistry } from '../../application/state/terminalReconnectRegistry';
 import { Button } from '../ui/button';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { PromptDialog } from '../ui/PromptDialog';
@@ -16,6 +18,15 @@ import RedisKeyTree from './RedisKeyTree';
 import RedisValueViewer from './RedisValueViewer';
 import RedisOverviewPanel from './RedisOverviewPanel';
 import SqlSchemaTree from './SqlSchemaTree';
+import SqlSearchPanel from './SqlSearchPanel';
+import SqlSessionsPanel from './SqlSessionsPanel';
+import SqlErdPanel from './SqlErdPanel';
+import SqlTransferPanel from './SqlTransferPanel';
+import SqlOverviewPanel from './SqlOverviewPanel';
+import SqlLocksPanel from './SqlLocksPanel';
+import SqlUsersPanel from './SqlUsersPanel';
+import RedisOpsPanel from './RedisOpsPanel';
+import { generateSql } from './sqlGenerate';
 import SqlTableStructure from './SqlTableStructure';
 import SqlTableDesigner from './SqlTableDesigner';
 import SqlTableData from './SqlTableData';
@@ -48,6 +59,32 @@ const STATUS_COLORS: Record<string, string> = {
   disconnected: 'bg-muted-foreground',
 };
 
+/** SQL workbench top tabs (sessions gated per-engine by features.sessions). */
+type SqlView = 'overview' | 'workbench' | 'backup' | 'sessions' | 'erd' | 'locks' | 'users';
+
+const SQL_VIEWS: readonly SqlView[] = ['overview', 'workbench', 'backup', 'sessions', 'erd', 'locks', 'users'];
+
+const SQL_VIEW_LABELS: Record<SqlView, string> = {
+  overview: 'db.overview.title',
+  workbench: 'db.workbench.view.workbench',
+  backup: 'db.backup.title',
+  sessions: 'db.sessions.title',
+  erd: 'db.erd.title',
+  locks: 'db.locks.title',
+  users: 'db.users.title',
+};
+
+/** Views hidden (not rendered dead) when the engine registry lacks the capability. */
+const SQL_VIEW_FEATURES: Partial<Record<SqlView, 'sessions' | 'locks' | 'users'>> = {
+  sessions: 'sessions',
+  locks: 'locks',
+  users: 'users',
+};
+
+// Dropdown rendering stays bounded even for exotic `databases` configs —
+// the SELECT field itself accepts up to REDIS_DB_INDEX_MAX via the form.
+const REDIS_DB_SELECTOR_CAP = 256;
+
 const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, hosts, onStatusChange }) => {
   const { t } = useI18n();
   // Fires when the main process dropped the connection (idle reap / server
@@ -55,8 +92,25 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
   const handleConnectionLost = useCallback(() => {
     toast.error(t('db.workbench.connectionLost'));
   }, [t]);
-  const { status, connectionId, errorMessage, connect, disconnect, dialect } =
+  const { status, connectionId, errorMessage, connect, disconnect, reconnect, dialect } =
     useDatabaseWorkbenchState({ session, host, hosts, onConnectionLost: handleConnectionLost });
+
+  // The top-tab context menu routes 重新连接 through the terminal reconnect
+  // registry; DB sessions bypass TerminalPane (the usual handler producer), so
+  // without this registration the menu item silently queues into a handler
+  // that never exists. Fresh-dial handler + live refs (Terminal.tsx idiom)
+  // avoid resubscribing the registry on every status flip.
+  const reconnectRef = useRef(reconnect);
+  reconnectRef.current = reconnect;
+  const canReconnectRef = useRef(false);
+  canReconnectRef.current = status !== 'connecting';
+  useEffect(() => (
+    terminalReconnectRegistry.register(
+      session.id,
+      () => reconnectRef.current(),
+      () => canReconnectRef.current(),
+    )
+  ), [session.id]);
   const [refreshToken, setRefreshToken] = useState(0);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
@@ -70,11 +124,17 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
   const [redisView, setRedisView] = useState<'keys' | 'pubsub' | 'console'>('keys');
   // SQL full-area views: the workbench grid or the backup/restore panel
   // (switcher in the toolbar, mirroring the redis keys/pubsub/console views).
-  const [sqlView, setSqlView] = useState<'workbench' | 'backup'>('workbench');
+  const [sqlView, setSqlView] = useState<SqlView>('workbench');
   // Visual table designer (SQL dialects only): open with editingTable=null for
   // create mode, or the table name to prefill from tableMeta (edit mode).
   const [designerTable, setDesignerTable] = useState<string | null>(null);
   const [designerOpen, setDesignerOpen] = useState(false);
+  // Database-wide search panel (SQL dialects): replaces the tree area.
+  const [sqlSearchOpen, setSqlSearchOpen] = useState(false);
+  // Cross-connection table transfer (SQL dialects): replaces the tree area.
+  const [sqlTransfer, setSqlTransfer] = useState<{ table: string; schema?: string } | null>(null);
+  // Redis ops panel (slow log / client list): replaces the tree area.
+  const [redisOpsOpen, setRedisOpsOpen] = useState(false);
   // Redis logical database (single-connection SELECT). Defaults to the host's
   // configured db; reset whenever a (re)connection is established because the
   // bridge dials back into the configured db.
@@ -99,9 +159,9 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
 
   const isRedis = dialect === 'redis';
   const isCluster = isRedis && host.redisConfig?.cluster === true;
-  // The SQL views all take the non-redis dialect; narrow once here instead of
-  // re-coercing at every prop site.
-  const sqlDialect: 'mysql' | 'postgresql' = dialect === 'mysql' ? 'mysql' : 'postgresql';
+  // The SQL views all take the engine id (non-redis); narrow once here instead
+  // of re-coercing at every prop site. The pre-connection fallback stays 'postgresql'.
+  const sqlDialect: SqlEngineId = dialect === 'redis' ? 'postgresql' : dialect;
 
   // DB sessions bypass TerminalPane, so nothing else updates the session's
   // status — without this the top-tab dot stays on its initial 'connecting'.
@@ -132,7 +192,10 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
         setRedisSummary(info.summary);
         setClusterNodes(info.nodes && info.nodes.length > 1 ? info.nodes : null);
         if (isCluster) { setDbOptions(null); return; }
-        const total = Math.min(Number(info.summary['server.databases'] ?? 16) || 16, 16);
+        // Server truth (bridge CONFIG GET databases); 16 is only Redis's
+        // default and the fallback for CONFIG-disabled providers. Rendering
+        // stays bounded even for exotic configs.
+        const total = Math.min(Number(info.databases ?? 16) || 16, REDIS_DB_SELECTOR_CAP);
         const options: { db: number; keys: number }[] = [];
         for (let i = 0; i < total; i++) {
           // INFO keyspace lines are "db0:keys=..." → summary key is `db0`.
@@ -207,21 +270,58 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
     setSelectedTable(object);
     setSelectedSchema(schema);
   };
+  // Menu capability gates (registry-driven, same source as designer/backup):
+  // features.truncate (sqlite has none) and the file-backed address mode (a
+  // sqlite file has no database/schema node to drop). The sqlIdent builders'
+  // null returns stay as the builders' internal contract; the menu no longer
+  // probes them with dummy arguments. Omitted handlers simply drop their menu
+  // items — nothing renders disabled.
+  const engineFeatures = SQL_ENGINE_BY_ID[sqlDialect].features;
+  const canDropDatabase = SQL_ENGINE_BY_ID[sqlDialect].addressMode !== 'file';
+  const canTruncateTables = engineFeatures.truncate;
   const dbMenu: SqlDatabaseContextMenuHandlers = {
-    onNewTable: (name) => { selectDatabase(name); openDesigner(null); },
+    ...(engineFeatures.designer ? {
+      onNewTable: (name: string) => { selectDatabase(name); openDesigner(null); },
+    } : {}),
     onNewQuery: (name) => { selectDatabase(name); setSqlTab('query'); seedNewQuery(''); },
     onRefresh: bumpRefresh,
-    onBackup: (name) => { selectDatabase(name); setSqlView('backup'); },
-    onDrop: (name) => setTreeConfirm({
-      title: t('db.tree.menu.dropConfirmTitle', { name }),
-      message: t(sqlDialect === 'postgresql' ? 'db.tree.menu.dropSchemaConfirmMsg' : 'db.tree.menu.dropDbConfirmMsg', { name }),
-      sql: dropDatabase(sqlDialect, name),
-      confirmLabel: t('db.tree.menu.confirmDrop'),
-    }),
+    ...(engineFeatures.backupRestore ? {
+      onBackup: (name: string) => { selectDatabase(name); setSqlView('backup'); },
+    } : {}),
+    ...(canDropDatabase ? {
+      onDrop: (name: string) => {
+        const sql = dropDatabase(sqlDialect, name);
+        if (!sql) return;
+        setTreeConfirm({
+          title: t('db.tree.menu.dropConfirmTitle', { name }),
+          // Tree top-level nodes are schemas on schema-qualified engines
+          // (pg CASCADE / mssql) and databases on the mysql family.
+          message: t(SQL_ENGINE_BY_ID[sqlDialect].schemaQualified ? 'db.tree.menu.dropSchemaConfirmMsg' : 'db.tree.menu.dropDbConfirmMsg', { name }),
+          sql,
+          confirmLabel: t('db.tree.menu.confirmDrop'),
+        });
+      },
+    } : {}),
   };
   const tableMenu: SqlObjectContextMenuHandlers = {
     onOpenData: (table, schema) => { selectObject(table, schema); setSqlTab('data'); },
-    onDesign: (table, schema) => { selectObject(table, schema); openDesigner(table); },
+    onTransferTo: (table, schema) => { setSqlTransfer({ table, schema }); },
+    onGenerateSql: (table, schema, kind) => {
+      void (async () => {
+        try {
+          const meta = await databaseClient[sqlDialect].tableMeta({ connectionId, table, schema });
+          const pkCols = meta.primaryKey?.columns ?? [];
+          const colNames = meta.columns.map((c) => c.name);
+          seedNewQuery(generateSql(sqlDialect, kind, table, colNames, pkCols));
+          setSqlTab('query');
+        } catch (err) {
+          toast.error(dbErrorMessage(err), t('db.tree.menu.generateSql'));
+        }
+      })();
+    },
+    ...(engineFeatures.designer ? {
+      onDesign: (table: string, schema?: string) => { selectObject(table, schema); openDesigner(table); },
+    } : {}),
     onOpenStructure: (table, schema) => { selectObject(table, schema); setSqlTab('structure'); },
     onNewQuery: (table, schema) => {
       selectObject(table, schema);
@@ -229,12 +329,18 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
       seedNewQuery(seedSelect(sqlDialect, schema, table));
     },
     onCopyName: copyName,
-    onTruncate: (table, schema) => setTreeConfirm({
-      title: t('db.tree.menu.truncateConfirmTitle', { name: table }),
-      message: t('db.tree.menu.truncateConfirmMsg', { name: table }),
-      sql: truncateTable(sqlDialect, schema, table),
-      confirmLabel: t('db.tree.menu.confirmTruncate'),
-    }),
+    ...(canTruncateTables ? {
+      onTruncate: (table: string, schema?: string) => {
+        const sql = truncateTable(sqlDialect, schema, table);
+        if (!sql) return;
+        setTreeConfirm({
+          title: t('db.tree.menu.truncateConfirmTitle', { name: table }),
+          message: t('db.tree.menu.truncateConfirmMsg', { name: table }),
+          sql,
+          confirmLabel: t('db.tree.menu.confirmTruncate'),
+        });
+      },
+    } : {}),
     onRename: (object, schema) => setRenameTarget({ object, schema, kind: 'table' }),
     onDrop: (object, schema) => setTreeConfirm({
       title: t('db.tree.menu.dropConfirmTitle', { name: object }),
@@ -318,8 +424,9 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
           (view) => t(`db.workbench.view.${view}`),
         )}
         {!isRedis && status === 'connected' && viewSwitcher(
-          ['workbench', 'backup'], sqlView, (view) => setSqlView(view as 'workbench' | 'backup'),
-          (view) => t(view === 'backup' ? 'db.backup.title' : `db.workbench.view.${view}`),
+          SQL_VIEWS.filter((view) => { const feature = SQL_VIEW_FEATURES[view]; return !feature || engineFeatures[feature]; }),
+          sqlView, (view) => setSqlView(view as SqlView),
+          (view) => t(SQL_VIEW_LABELS[view as SqlView]),
         )}
         {isRedis && !isCluster && status === 'connected' && dbOptions && (
           <Select value={String(currentDb)} onValueChange={(v) => void switchDb(Number(v))}>
@@ -362,6 +469,27 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
           <RedisPubSub connectionId={connectionId} />
         ) : isRedis && redisView === 'console' ? (
           <RedisConsole connectionId={connectionId} />
+        ) : !isRedis && sqlView === 'users' ? (
+          // User management v1: full-area view (pg/mysql).
+          <SqlUsersPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
+        ) : !isRedis && sqlView === 'locks' ? (
+          // Lock management: full-area view (pg/mysql/mssql).
+          <SqlLocksPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
+        ) : !isRedis && sqlView === 'sessions' ? (
+          // Session manager: full-area view (roomy table + terminate actions).
+          <SqlSessionsPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
+        ) : !isRedis && sqlView === 'erd' ? (
+          // ER diagram: full-area view.
+          <SqlErdPanel
+            connectionId={connectionId}
+            dialect={sqlDialect}
+            selectedSchema={selectedSchema ?? (selectedDatabase || undefined)}
+            onOpenData={(table, schema) => { setSelectedTable(table); setSelectedSchema(schema); setSqlTab('data'); setSqlView('workbench'); }}
+            onClose={() => setSqlView('workbench')}
+          />
+        ) : !isRedis && sqlView === 'overview' ? (
+          // Overview dashboard: full-area info cards + top tables.
+          <SqlOverviewPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
         ) : !isRedis && sqlView === 'backup' ? (
           // Backup/restore: full-area view like the redis console views.
           <SqlBackupRestore
@@ -369,7 +497,7 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
             dialect={sqlDialect}
             table={selectedTable ?? undefined}
             schema={selectedSchema}
-            dbName={host.sqlConfig?.database || host.hostname}
+            dbName={dbHostDatabaseName(host)}
             onClose={() => setSqlView('workbench')}
           />
         ) : !isRedis && designerOpen ? (
@@ -394,6 +522,35 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
                 clusterMode={isCluster}
                 onSelectKey={(key, nodeId) => { setSelectedKey(key); setSelectedNodeId(nodeId); }}
                 onKeysChanged={bumpRedisRefresh}
+                onOpenOps={() => setRedisOpsOpen(true)}
+              />
+            ) : sqlTransfer ? (
+              <SqlTransferPanel
+                connectionId={connectionId}
+                dialect={sqlDialect}
+                sourceTable={sqlTransfer.table}
+                sourceSchema={sqlTransfer.schema}
+                dbHosts={(hosts ?? []).filter((h) => h.protocol === sqlDialect)}
+                onOpenData={(table, schema) => {
+                  setSelectedTable(table);
+                  setSelectedSchema(schema);
+                  setSqlTab('data');
+                  setSqlTransfer(null);
+                }}
+                onClose={() => setSqlTransfer(null)}
+              />
+            ) : sqlSearchOpen ? (
+              <SqlSearchPanel
+                connectionId={connectionId}
+                dialect={sqlDialect}
+                selectedSchema={selectedSchema ?? (selectedDatabase || undefined)}
+                onOpenData={(table, schema) => {
+                  setSelectedTable(table);
+                  setSelectedSchema(schema);
+                  setSqlTab('data');
+                  setSqlSearchOpen(false);
+                }}
+                onClose={() => setSqlSearchOpen(false)}
               />
             ) : (
               <SqlSchemaTree
@@ -401,6 +558,7 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
                 dialect={sqlDialect}
                 refreshToken={refreshToken}
                 onCreateTable={() => openDesigner(null)}
+                onOpenSearch={() => setSqlSearchOpen(true)}
                 onSelectTable={(table, _kind, schema) => { setSelectedTable(table); setSelectedSchema(schema); setSqlTab('data'); }}
                 selectedDatabase={selectedDatabase}
                 onSelectDatabase={selectDatabase}
@@ -411,7 +569,12 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
             )}
           </div>
           <div className="min-h-0 flex flex-col">
-            {isRedis ? (
+            {isRedis && redisOpsOpen ? (
+              <RedisOpsPanel
+                connectionId={connectionId}
+                onClose={() => setRedisOpsOpen(false)}
+              />
+            ) : isRedis ? (
               selectedKey ? (
                 <RedisValueViewer
                   connectionId={connectionId}
@@ -424,7 +587,7 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
               ) : (
                 // No key selected: the default view shows the server overview
                 // (stats from the shared serverInfo fetch) instead of blank space.
-                <RedisOverviewPanel summary={redisSummary ?? {}} db={currentDb} />
+                <RedisOverviewPanel summary={redisSummary ?? {}} db={currentDb} connectionId={connectionId} />
               )
             ) : (
               <>

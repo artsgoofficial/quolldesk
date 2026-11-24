@@ -538,6 +538,15 @@ function AppViewInner({ domains }: AppViewProps) {
     void quolldeskBridge.get()?.setPluginScopeCatalog?.(catalog).catch(() => {});
   }, [hosts, sessions, t, workspaces]);
 
+  // Hosts with a visible session — feeds the per-card online dot in the vault list.
+  const onlineHostIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const s of sessions) {
+      if (!s.hiddenFromTabs && typeof s.hostId === 'string') ids.add(s.hostId);
+    }
+    return ids;
+  }, [sessions]);
+
   return (
     <SnippetExecutionProvider>
     <UnsavedChangesProvider>
@@ -653,6 +662,7 @@ function AppViewInner({ domains }: AppViewProps) {
             knownHosts={effectiveKnownHosts}
             managedSources={managedSources}
             sessionCount={sessions.filter((s) => !s.hiddenFromTabs).length}
+            onlineHostIds={onlineHostIds}
             hotkeyScheme={hotkeyScheme}
             keyBindings={keyBindings}
             terminalThemeId={terminalThemeId}

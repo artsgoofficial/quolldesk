@@ -2,6 +2,7 @@ import type { Host } from "../../domain/models";
 import {
   buildVaultHostMergeKey,
   importVaultHostsFromText,
+  isBatchFolderFormat,
   mergeVaultImportIssues,
   type VaultImportExistingHostRef,
   type VaultImportFormat,
@@ -74,6 +75,28 @@ const finalShellGroupFromFile = (
   return segments.length > 0 ? segments.join("/") : undefined;
 };
 
+const shouldIgnoreXshellFile = (file: File): boolean => (
+  !file.name.toLowerCase().endsWith(".xsh")
+);
+
+// Xshell lays sessions out as `.../Xshell/Sessions/<group>/<subgroup>/<name>.xsh`;
+// group everything after the last "Sessions" segment so picking the Sessions
+// folder, a group folder, or the whole NetSarang tree all resolve correctly.
+const xshellGroupFromFile = (
+  file: File,
+  transferredRelativePath?: string,
+): string | undefined => {
+  const segments = normalizeRelativePath(file, transferredRelativePath);
+  if (segments.length <= 1) return undefined;
+  segments.pop();
+  for (let index = 0; index < segments.length; index++) {
+    if (segments[index]?.toLowerCase() === "sessions") {
+      return segments.slice(index + 1).join("/") || undefined;
+    }
+  }
+  return segments.join("/");
+};
+
 export async function importVaultHostFiles({
   format,
   files,
@@ -91,7 +114,9 @@ export async function importVaultHostFiles({
     ? sourceFiles.filter(({ file }) => !shouldIgnoreSecureCrtFile(file))
     : format === "finalshell"
       ? sourceFiles.filter(({ file }) => file.name.toLowerCase().endsWith(".json"))
-      : sourceFiles.slice(0, 1);
+      : format === "xshell"
+        ? sourceFiles.filter(({ file }) => !shouldIgnoreXshellFile(file))
+        : sourceFiles.slice(0, 1);
   const hosts: Host[] = [];
   const issues: VaultImportIssue[] = [];
   const keyPassphrases: NonNullable<VaultImportResult["keyPassphrases"]> = [];
@@ -113,7 +138,9 @@ export async function importVaultHostFiles({
         ? secureCrtGroupFromFile(file, relativePath)
         : format === "finalshell"
           ? finalShellGroupFromFile(file, relativePath)
-          : undefined;
+          : format === "xshell"
+            ? xshellGroupFromFile(file, relativePath)
+            : undefined;
       const fileHosts = result.hosts.map((host) => (
         group && !host.group ? { ...host, group } : host
       ));
@@ -133,14 +160,15 @@ export async function importVaultHostFiles({
           skipped++;
           issues.push({
             level: "warning",
-            message: `${file.name}: no importable ${format === "securecrt" ? "SecureCRT session" : "FinalShell connection"} found.`,
+            message: `${file.name}: no importable ${format === "securecrt" ? "SecureCRT session" : format === "xshell" ? "Xshell session" : "FinalShell connection"} found.`,
           });
         }
       } else {
         hosts.push(...fileHosts);
       }
     } catch (error) {
-      if ((format !== "securecrt" && format !== "finalshell") || selectedFiles.length <= 1) throw error;
+      const tolerantFormat = isBatchFolderFormat(format);
+      if (!tolerantFormat || selectedFiles.length <= 1) throw error;
       skipped++;
       issues.push({
         level: "error",
@@ -156,7 +184,7 @@ export async function importVaultHostFiles({
   }
 
   const seen = new Set<string>();
-  const uniqueHosts = format === "securecrt" || format === "finalshell"
+  const uniqueHosts = isBatchFolderFormat(format)
     ? hosts
     : hosts.filter((host) => {
       const key = buildVaultHostMergeKey(host);

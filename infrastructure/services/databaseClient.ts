@@ -1,14 +1,13 @@
-// Typed renderer-side client for the QuollDesk database bridges
-// (redis / mysql / postgresql). Every call goes through window.quolldesk
-// (via quolldeskBridge) and unwraps the DbEnvelope: `ok:false` becomes a
-// thrown DbClientError carrying the bridge error code.
+// Typed renderer-side client for the QuollDesk database bridges (redis plus
+// the five SQL engines from SQL_ENGINE_BY_ID). Every call goes through
+// window.quolldesk (via quolldeskBridge) and unwraps the DbEnvelope:
+// `ok:false` becomes a thrown DbClientError carrying the bridge error code.
 
 import type {
   DbBackupOptions,
   DbConnectionClosed,
   DbConnectOptions,
   DbEnvelope,
-  DbGridFilter,
   DbJobProgress,
   DbTableChanges,
   DbRestoreOptions,
@@ -16,6 +15,7 @@ import type {
   SqlSchemaTree,
   SqlTableMeta,
   SqlTableRows,
+  SqlTableRowsArgs,
 } from '../../types/global/quolldesk-bridge-database';
 // RedisConnectionConfig / SqlConnectionConfig are defined in
 // domain/models/database (connection.ts imports them but does not re-export).
@@ -24,12 +24,13 @@ import type {
   SqlConnectionConfig,
 } from '../../domain/models/database';
 import { DB_DEFAULT_PORTS } from '../../domain/models/database';
+import { SQL_ENGINE_BY_ID, type SqlEngineId, type SqlEngineCap } from '../../domain/models/dbEngines';
 // HostChainConfig is Host's real hostChain shape ({ hostIds: string[] });
 // HostLike must stay structurally assignable FROM Host.
 import type { HostChainConfig } from '../../domain/models/connection';
 import { quolldeskBridge } from './quolldeskBridge';
 
-export type DbDialect = 'redis' | 'mysql' | 'postgresql';
+export type DbDialect = 'redis' | SqlEngineId;
 
 export class DbClientError extends Error {
   code: string;
@@ -110,8 +111,10 @@ export function resolveDbConnectArgs(params: {
   const args: DbConnectOptions = {
     hostname: host.hostname,
     // A portless host must dial the dialect default, not port 0 — port 0 is
-    // invalid for a remote dial and fails with a confusing error.
-    port: host.port ?? DB_DEFAULT_PORTS[dialect],
+    // invalid for a remote dial and fails with a confusing error. SQLite has
+    // no default port (DB_DEFAULT_PORTS entry is null): the hostname IS the
+    // database file, so the port is omitted entirely.
+    port: host.port ?? DB_DEFAULT_PORTS[dialect] ?? undefined,
     username: host.username,
     password: host.password,
     config,
@@ -146,7 +149,7 @@ function makeRedisMethods() {
     keyValue: (args: { connectionId: string; key: string; type: string; cursor?: number | string; count?: number; nodeId?: string }) =>
       call<{ items: { index: number | string; value: string | null; score?: number }[]; cursor?: number | string; hasMore?: boolean; truncated?: boolean }>('getRedisKeyValue', args),
     serverInfo: (args: { connectionId: string; nodeId?: string }) =>
-      call<{ summary: Record<string, string>; nodes?: { nodeId: string; host: string; port: number; role: string }[] }>('getRedisServerInfo', args),
+      call<{ summary: Record<string, string>; nodes?: { nodeId: string; host: string; port: number; role: string }[]; databases?: number }>('getRedisServerInfo', args),
     selectDb: (args: { connectionId: string; db: number }) =>
       call<{ db: number }>('selectRedisDb', args),
     keyTypes: (args: { connectionId: string; keys: string[]; nodeId?: string }) =>
@@ -192,15 +195,15 @@ function makeRedisMethods() {
   };
 }
 
-// Bridge method names per dialect (must match the Task 11 declaration):
-// connectMysql / connectPg, disconnectMysql / disconnectPg,
-// testMysqlConnection / testPgConnection, getMysqlSchemaTree / getPgSchemaTree,
-// getMysqlTableMeta / getPgTableMeta, getMysqlTableRows / getPgTableRows,
-// queryMysql / queryPg. Because `method` is keyof DbBridge, a wrong name is a
-// compile error, not a runtime surprise.
-function makeSqlMethods(dialect: 'mysql' | 'postgresql') {
-  const cap: 'Mysql' | 'Pg' = dialect === 'mysql' ? 'Mysql' : 'Pg';
-  const isMysql = dialect === 'mysql';
+// Bridge method names per engine (must match the Task 3 declaration):
+// connect{Cap} / disconnect{Cap} / test{Cap}Connection / get{Cap}SchemaTree /
+// get{Cap}TableMeta / get{Cap}TableRows / query{Cap} / apply{Cap}TableChanges
+// / pick{Cap}BackupPath / pick{Cap}RestoreFile / backup{Cap} / restore{Cap},
+// with cap = SQL_ENGINE_BY_ID[engine].cap ('Mysql'|'Pg'|'Mariadb'|'Mssql'|
+// 'Sqlite'). Because `method` is keyof DbBridge, a wrong template-built name
+// is a compile error, not a runtime surprise.
+function makeSqlMethods(dialect: SqlEngineId) {
+  const cap: SqlEngineCap = SQL_ENGINE_BY_ID[dialect].cap;
   return {
     connect: (opts: DbConnectOptions) => call<{ connectionId: string }>(`connect${cap}`, opts),
     disconnect: (connectionId: string) => call<Record<string, never>>(`disconnect${cap}`, connectionId),
@@ -210,13 +213,12 @@ function makeSqlMethods(dialect: 'mysql' | 'postgresql') {
       call<SqlSchemaTree>(`get${cap}SchemaTree`, { connectionId }),
     tableMeta: (args: { connectionId: string; table: string; schema?: string }) =>
       call<SqlTableMeta>(`get${cap}TableMeta`, args),
-    tableRows: (args: { connectionId: string; table: string; schema?: string; orderBy?: string; orderDir?: 'asc' | 'desc'; filters?: DbGridFilter[]; offset?: number; limit?: number }) =>
+    tableRows: (args: SqlTableRowsArgs) =>
       call<SqlTableRows>(`get${cap}TableRows`, args),
-    query: isMysql
-      ? (args: { connectionId: string; sql: string; timeoutMs?: number }) =>
-          call<SqlQueryResult>('queryMysql', args)
-      : (args: { connectionId: string; sql: string; values?: unknown[] }) =>
-          call<SqlQueryResult>('queryPg', args),
+    // Unified shape: each bridge reads what it needs (values: pg/sqlite/mssql;
+    // timeoutMs: mysql family/mssql).
+    query: (args: { connectionId: string; sql: string; values?: unknown[]; timeoutMs?: number }) =>
+      call<SqlQueryResult>(`query${cap}`, args),
     applyTableChanges: (args: { connectionId: string; table: string; schema?: string; changes: DbTableChanges }) =>
       call<{ applied: { updates: number; inserts: number; deletes: number } }>(`apply${cap}TableChanges`, args),
     // SQL backup/restore (Wave 6). backup/restore are async jobs: the invoke
@@ -229,6 +231,11 @@ function makeSqlMethods(dialect: 'mysql' | 'postgresql') {
       call<{ jobId: string }>(`backup${cap}`, args),
     restore: (args: DbRestoreOptions) =>
       call<{ jobId: string }>(`restore${cap}`, args),
+    // Session manager (pg/mysql/mariadb/mssql only — sqlite has no server
+    // sessions; the UI gates on features.sessions).
+    sessions: (args: { connectionId: string }) => call<{ sessions: { id: string; user: string; app: string; state: string; seconds: number; query: string }[] }>(`sessions${cap}`, args),
+    killSession: (args: { connectionId: string; pid: string; cancel?: boolean }) =>
+      call<Record<string, never>>(`kill${cap}Session`, args),
     onJobProgress: (cb: (payload: DbJobProgress) => void) => {
       const fn = bridge().onDbJobProgress;
       if (typeof fn !== 'function') throw new DbClientError('BRIDGE_UNAVAILABLE', 'onDbJobProgress unavailable');
@@ -241,6 +248,9 @@ export const databaseClient = {
   redis: makeRedisMethods(),
   mysql: makeSqlMethods('mysql'),
   postgresql: makeSqlMethods('postgresql'),
+  mariadb: makeSqlMethods('mariadb'),
+  mssql: makeSqlMethods('mssql'),
+  sqlite: makeSqlMethods('sqlite'),
 } as const;
 
 /**

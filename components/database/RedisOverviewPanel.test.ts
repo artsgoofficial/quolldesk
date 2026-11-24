@@ -5,7 +5,7 @@ import { test } from 'node:test';
 const source = readFileSync(new URL('./RedisOverviewPanel.tsx', import.meta.url), 'utf8');
 
 test('overview panel renders from the shared pure helpers, not ad-hoc parsing', () => {
-  assert.match(source, /import \{ formatDurationMs, parseKeyspace, redisHitRate \} from '\.\/redisOverview'/);
+  assert.match(source, /import \{[\s\S]{0,200}formatDurationMs[\s\S]{0,200}parseKeyspace[\s\S]{0,200}redisHitRate[\s\S]{0,200}\} from '\.\/redisOverview'/);
   assert.match(source, /parseKeyspace\(summary, db\)/);
   assert.match(source, /redisHitRate\(summary\)/);
 });

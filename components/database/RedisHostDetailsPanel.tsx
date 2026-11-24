@@ -7,7 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { Host } from '../../domain/models/connection';
 import {
-  DB_DEFAULT_PORTS, isValidPort, normalizeRedisConfig,
+  DB_DEFAULT_PORTS, isValidPort, isValidRedisDbIndex, normalizeRedisConfig,
 } from '../../domain/models/database';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -53,9 +53,12 @@ export const RedisHostDetailsPanel: React.FC<RedisHostDetailsPanelProps> = ({
   const portNumber = useMemo(() => Number(port), [port]);
   const hostInvalid = !hostname.trim();
   const portInvalid = !isValidPort(portNumber);
-  const dbInvalid = redisDb !== '' && (!/^\d+$/.test(redisDb) || Number(redisDb) > 15);
+  const dbInvalid = redisDb !== '' && (!/^\d+$/.test(redisDb) || !isValidRedisDbIndex(Number(redisDb)));
 
-  const buildHost = (): Host => ({
+  // dialPassword: the in-form 测试连接 probe dials with the live form password
+  // even when it must not persist — savePassword only gates storage (same
+  // contract as the SQL panel's buildHost).
+  const buildHost = (dialPassword?: string): Host => ({
     ...(initialData ?? {}),
     // Host requires tags/os; the `?? {}` spread leaves them undefined on new
     // hosts, so provide explicit defaults (preserved from initialData on edit).
@@ -67,7 +70,7 @@ export const RedisHostDetailsPanel: React.FC<RedisHostDetailsPanelProps> = ({
     hostname: hostname.trim(),
     port: portNumber,
     username: '',
-    password: savePassword ? password : undefined,
+    password: dialPassword !== undefined ? dialPassword : (savePassword ? password : undefined),
     savePassword,
     redisConfig: normalizeRedisConfig({
       redisDb: redisDb === '' ? undefined : Number(redisDb),
@@ -85,7 +88,7 @@ export const RedisHostDetailsPanel: React.FC<RedisHostDetailsPanelProps> = ({
   const runTest = async () => {
     setTesting(true);
     setTestResult(null);
-    const probe: Host = { ...buildHost() };
+    const probe: Host = buildHost(password);
     const tunnelHost = sshHosts.find((h) => h.id === tunnelHostId) ?? undefined;
     try {
       const args = resolveDbConnectArgs({

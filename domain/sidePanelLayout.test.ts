@@ -14,7 +14,10 @@ import {
   resizeSidePanelSplit,
   selectSidePanelTool,
   sidePanelLayoutHasTool,
+  sidePanelToolAvailableForProtocol,
   splitSidePanelPane,
+  FILE_BOUND_SIDE_PANEL_TOOLS,
+  TERMINAL_BOUND_SIDE_PANEL_TOOLS,
 } from './sidePanelLayout.ts';
 
 test('panes smaller than two minimum cells cannot be split again', () => {
@@ -172,4 +175,45 @@ test('dock position validator accepts only known positions', () => {
   assert.equal(isSidePanelDockPosition('bottom'), true);
   assert.equal(isSidePanelDockPosition('top'), false);
   assert.equal(isSidePanelDockPosition(42), false);
+});
+
+test('file-bound tools need a file-capable transport, command panes stay off the DB workbench', () => {
+  const fileProtocols = ['ssh', 'mosh', 'local', undefined, null] as const;
+  for (const protocol of fileProtocols) {
+    for (const tool of FILE_BOUND_SIDE_PANEL_TOOLS) {
+      assert.equal(sidePanelToolAvailableForProtocol(tool, protocol), true, `${tool} @ ${protocol}`);
+    }
+  }
+  const nonFileProtocols = ['telnet', 'serial', 'et', 'redis', 'mysql', 'postgresql'] as const;
+  for (const protocol of nonFileProtocols) {
+    for (const tool of FILE_BOUND_SIDE_PANEL_TOOLS) {
+      assert.equal(sidePanelToolAvailableForProtocol(tool, protocol), false, `${tool} @ ${protocol}`);
+    }
+  }
+});
+
+test('terminal-bound tools stay available on shell-capable protocols', () => {
+  for (const protocol of ['ssh', 'mosh', 'local', undefined, null, 'telnet', 'serial', 'et'] as const) {
+    for (const tool of TERMINAL_BOUND_SIDE_PANEL_TOOLS) {
+      assert.equal(sidePanelToolAvailableForProtocol(tool, protocol), true, `${tool} @ ${protocol}`);
+    }
+  }
+});
+
+test('terminal-bound tools are unavailable on database protocol sessions', () => {
+  const dbProtocols = ['redis', 'mysql', 'postgresql', 'mariadb', 'mssql', 'sqlite'] as const;
+  for (const protocol of dbProtocols) {
+    for (const tool of TERMINAL_BOUND_SIDE_PANEL_TOOLS) {
+      assert.equal(sidePanelToolAvailableForProtocol(tool, protocol), false, `${tool} @ ${protocol}`);
+    }
+    for (const tool of ['ai', 'notes', 'theme'] as const) {
+      assert.equal(sidePanelToolAvailableForProtocol(tool, protocol), true, `${tool} @ ${protocol}`);
+    }
+  }
+});
+
+test('plugin panes are available on every protocol', () => {
+  for (const protocol of ['ssh', 'redis', 'postgresql', undefined] as const) {
+    assert.equal(sidePanelToolAvailableForProtocol('plugin-view:example', protocol), true);
+  }
 });

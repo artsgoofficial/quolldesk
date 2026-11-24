@@ -1,4 +1,5 @@
 "use strict";
+const { waitForPush } = require("./dbCommon/testHelpers.cjs");
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -71,23 +72,35 @@ function makeFakePg() {
       if (lower.includes("pg_get_viewdef")) {
         return { rows: [{ def: "SELECT id, name FROM users" }] };
       }
+      if (lower.includes("information_schema.triggers")) {
+        return { rows: [{ name: "trg_touch", timing: "BEFORE", event: "UPDATE", statement: "UPDATE users SET touched = now()" }] };
+      }
+      if (lower.includes("pg_stat_activity")) {
+        return { rows: [{ pid: 77, user: "app", app: "worker", state: "active", seconds: "12", query: "SELECT pg_sleep(60)" }] };
+      }
+      if (lower.includes("pg_terminate_backend") || lower.includes("pg_cancel_backend")) {
+        return { rows: [{ ok: true }] };
+      }
+      if (lower.includes("pg_constraint")) {
+        // Composite-capable structural FK rows (pg driver parses int2[]/text[]
+        // into JS arrays); actions are the canonical upper-case values.
+        return { rows: [
+          { name: "fk_users_parent", columns: ["parent_id"], ref_table: "user_groups", ref_schema: "public", ref_columns: ["id"], on_delete: "NO ACTION", on_update: "CASCADE" },
+          { name: "fk_users_org", columns: ["org_id"], ref_table: "orgs", ref_schema: "other_schema", ref_columns: ["oid"], on_delete: "SET NULL", on_update: null },
+        ] };
+      }
       if (lower.includes("nspname")) {
         return { rows: [{ schema_name: "public" }] };
       }
       if (lower.includes("information_schema.columns")) {
+        // comment mirrors what col_description(…) returns for the ER panel.
         return { rows: [
-          { column_name: "id", data_type: "integer", is_nullable: "NO", default_value: null },
-          { column_name: "name", data_type: "text", is_nullable: "YES", default_value: null },
+          { column_name: "id", data_type: "integer", is_nullable: "NO", default_value: null, comment: "主键ID" },
+          { column_name: "name", data_type: "text", is_nullable: "YES", default_value: null, comment: null },
         ] };
       }
       if (lower.includes("pg_indexes")) {
         return { rows: [{ indexname: "users_pkey", indexdef: "CREATE UNIQUE INDEX users_pkey ON public.users (id)" }] };
-      }
-      if (lower.includes("information_schema.table_constraints")) {
-        return { rows: [
-          { column_name: "parent_id", ref_table: "user_groups", ref_schema: "public", ref_column: "id" },
-          { column_name: "org_id", ref_table: "orgs", ref_schema: "other_schema", ref_column: "oid" },
-        ] };
       }
       if (lower.startsWith("select")) {
         return { rows: [{ id: 1, name: "a" }, { id: 2, name: "b" }], fields: [{ name: "id" }, { name: "name" }] };
@@ -130,20 +143,6 @@ function setup() {
 }
 
 /** Poll the captured job-progress pushes until one with `phase` lands. */
-function waitForPush(pushes, phase, timeoutMs = 3000, since = 0) {
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const tick = () => {
-      const hit = pushes.find((p, i) => i >= since && p.phase === phase);
-      if (hit) return resolve(hit);
-      if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`timeout waiting for phase '${phase}'; pushes=${JSON.stringify(pushes)}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
 
 function tmpSqlFile(label) {
   return path.join(os.tmpdir(), `nc-pg-bridge-test-${label}-${process.pid}-${Math.random().toString(16).slice(2)}.sql`);
@@ -169,6 +168,14 @@ test("pg connect/schemaTree/tableMeta/tableRows/query", async () => {
   assert.equal(meta.ok, true);
   assert.equal(meta.data.columns[0].name, "id");
   assert.equal(meta.data.columns[0].key, "PRI", "PK columns carry the mysql-compatible PRI flag");
+  // Column comments (ER panel): col_description flows through as `comment`,
+  // empty → null so the renderer can skip it.
+  assert.equal(meta.data.columns[0].comment, "主键ID", "column comment must surface in tableMeta");
+  assert.equal(meta.data.columns[1].comment, null);
+  const columnsQuery = fake.queries
+    .filter((q) => typeof q === "object" && !Array.isArray(q) && String(q.text ?? "").includes("col_description"))
+    .pop();
+  assert.ok(columnsQuery, "tableMeta must extract col_description for column comments");
   assert.equal(meta.data.indexes[0].name, "users_pkey");
   assert.deepEqual(meta.data.indexes[0].columns, ["id"]);
   assert.equal(meta.data.indexes[0].unique, true);
@@ -181,12 +188,24 @@ test("pg connect/schemaTree/tableMeta/tableRows/query", async () => {
   const fkQuery = fake.queries
     .filter((q) => typeof q === "object" && !Array.isArray(q) && String(q.text ?? "").includes("information_schema.table_constraints"))
     .pop();
-  assert.ok(fkQuery, "tableMeta must run the FK information_schema query");
+  assert.ok(fkQuery, "tableMeta must run the FK pg_constraint query");
   assert.deepEqual(fkQuery.values, ["public", "users"]);
   assert.deepEqual(meta.data.foreignKeys, [
-    { column: "parent_id", refTable: "user_groups", refSchema: "public", refColumn: "id" },
-    { column: "org_id", refTable: "orgs", refSchema: "other_schema", refColumn: "oid" },
+    { name: "fk_users_parent", columns: ["parent_id"], refTable: "user_groups", refSchema: "public", refColumns: ["id"], onDelete: "NO ACTION", onUpdate: "CASCADE" },
+    { name: "fk_users_org", columns: ["org_id"], refTable: "orgs", refSchema: "other_schema", refColumns: ["oid"], onDelete: "SET NULL", onUpdate: null },
   ]);
+  assert.deepEqual(meta.data.triggers, [
+    { name: "trg_touch", timing: "BEFORE", event: "UPDATE", statement: "UPDATE users SET touched = now()" },
+  ]);
+
+  // Session manager: list excludes our own backend; kill passes pid through.
+  const sessions = await call("quolldesk:pg:sessions", { connectionId });
+  assert.equal(sessions.ok, true, JSON.stringify(sessions));
+  assert.deepEqual(sessions.data.sessions, [
+    { id: "77", user: "app", app: "worker", state: "active", seconds: 12, query: "SELECT pg_sleep(60)" },
+  ]);
+  const killed = await call("quolldesk:pg:killSession", { connectionId, pid: 77 });
+  assert.equal(killed.ok, true, JSON.stringify(killed));
 
   // A view entry (relkind 'v') must surface its source: the bridge routes the
   // definition through pg_get_viewdef and returns it as ddl.
@@ -427,6 +446,18 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
         ] };
       }
       if (lower.includes("pg_indexes")) return { rows: [] };
+      if (lower.includes("information_schema.triggers")) {
+        return { rows: [{ name: "trg_touch", timing: "BEFORE", event: "UPDATE", statement: "UPDATE users SET touched = now()" }] };
+      }
+      if (lower.includes("pg_constraint")) {
+        return { rows: [{ name: "fk_docs_parent", def: "FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE" }] };
+      }
+      if (lower.includes("pg_trigger")) {
+        return { rows: [{ name: "trg_docs", def: "CREATE TRIGGER trg_docs AFTER INSERT ON public.docs FOR EACH ROW EXECUTE FUNCTION trg_fn()" }] };
+      }
+      if (lower.includes("pg_proc")) {
+        return { rows: [{ name: "demo_fn", def: "CREATE OR REPLACE FUNCTION public.demo_fn(p integer) RETURNS integer LANGUAGE plpgsql AS $$BEGIN RETURN p + 1;END;$$" }] };
+      }
       if (lower.includes('from "public"."docs"')) {
         return { rows, fields: [{ name: "id" }, { name: "doc" }, { name: "body" }, { name: "bin" }] };
       }
@@ -444,7 +475,8 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
   try {
     const conn = await call("quolldesk:pg:connect", { hostname: "pg", port: 5432, username: "postgres", password: "pw", config: { database: "app" } });
     const { connectionId } = conn.data;
-    const res = await call("quolldesk:pg:backup", { connectionId, scope: "table", schema: "public", table: "docs", includeData: true, outFile });
+    // Database scope so the routines section runs alongside per-table dumps.
+    const res = await call("quolldesk:pg:backup", { connectionId, scope: "database", includeData: true, outFile });
     assert.equal(res.ok, true, JSON.stringify(res));
     await waitForPush(pushes, "done");
 
@@ -468,6 +500,21 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
     // bytea: hex literal path, never the JSON Buffer serialization.
     assert.ok(dump.includes(`'\\xDEADBEEF'::bytea`), "bytea must dump as a hex literal");
     assert.ok(!dump.includes('"type":"Buffer"'), "bytea must not leak the JSON Buffer shape");
+    // FK constraints are dumped after indexes as named ADD CONSTRAINT statements.
+    assert.ok(
+      dump.includes('ALTER TABLE "public"."docs" ADD CONSTRAINT "fk_docs_parent" FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE;'),
+      "dump must carry the FK constraint",
+    );
+    // Triggers dump after FKs with their full CREATE TRIGGER definition.
+    assert.ok(
+      dump.includes('CREATE TRIGGER trg_docs AFTER INSERT ON public.docs FOR EACH ROW EXECUTE FUNCTION trg_fn();'),
+      "dump must carry the trigger definition",
+    );
+    // Routines dump last as CREATE OR REPLACE FUNCTION with $$ bodies intact.
+    assert.ok(
+      dump.includes('CREATE OR REPLACE FUNCTION public.demo_fn(p integer) RETURNS integer LANGUAGE plpgsql AS $$BEGIN RETURN p + 1;END;$$;'),
+      "dump must carry the routine definition",
+    );
 
     await call("quolldesk:pg:disconnect", { connectionId });
   } finally {

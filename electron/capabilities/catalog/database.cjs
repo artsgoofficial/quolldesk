@@ -21,7 +21,7 @@ const DATABASE_CAPABILITIES = [
     domain: "database",
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description:
-      "Get schema metadata for an open MySQL/PostgreSQL connection. Without `table`: list tables (schema, name, kind). With `table`: return that table's columns (name, data type, nullable, default, primary key flag). Always inspect the schema before writing SQL so identifiers and columns actually exist.",
+      "Get schema metadata for an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection. Without `table`: list tables (schema, name, kind). With `table`: return that table's columns (name, data type, nullable, default, primary key flag). Always inspect the schema before writing SQL so identifiers and columns actually exist.",
     policy: { write: false, sensitiveRead: false, longRunning: false, requiresChatSession: false, bypassesObserverBlock: false, bypassesApproval: true, bypassesChatCancel: true },
     surfaces: {
       global: { rpcMethod: "database/schema" },
@@ -33,7 +33,7 @@ const DATABASE_CAPABILITIES = [
     domain: "database",
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description:
-      "Run READ-ONLY SQL on an open MySQL/PostgreSQL connection (SELECT / SHOW / EXPLAIN / DESC / WITH…SELECT). Executed inside a READ ONLY transaction; any write attempt is rejected — use database_execute for writes. Multiple statements are allowed but every statement must be read-only. Rows and cells may be truncated.",
+      "Run READ-ONLY SQL on an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection — only statements the engine's read-only keyword gate allows (SELECT/WITH queries, plus engine forms like MySQL/MariaDB SHOW/EXPLAIN/DESC or SQLite PRAGMA). Executed inside a READ ONLY transaction where the engine supports one; any write attempt is rejected — use database_execute for writes. Multiple statements are allowed but every statement must be read-only. Rows and cells may be truncated.",
     policy: { write: false, sensitiveRead: true, longRunning: false, requiresChatSession: false, bypassesObserverBlock: false, bypassesApproval: true, bypassesChatCancel: true },
     surfaces: {
       global: { rpcMethod: "database/query" },
@@ -45,7 +45,7 @@ const DATABASE_CAPABILITIES = [
     domain: "database",
     status: CAPABILITY_STATUS.IMPLEMENTED,
     description:
-      "Execute SQL that mutates data or schema on an open MySQL/PostgreSQL connection (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE…). Requires user approval in confirm mode and is blocked in observer mode. Re-verify WHERE clauses on UPDATE/DELETE; the user sees the full SQL in the approval prompt.",
+      "Execute SQL that mutates data or schema on an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE…). Requires user approval in confirm mode and is blocked in observer mode. Re-verify WHERE clauses on UPDATE/DELETE; the user sees the full SQL in the approval prompt.",
     policy: { write: true, sensitiveRead: false, longRunning: false, requiresChatSession: false, bypassesObserverBlock: false, bypassesApproval: false, bypassesChatCancel: false },
     surfaces: {
       global: { rpcMethod: "database/execute" },

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -36,4 +36,14 @@ test("Vite's preload helper stays out of the vendor-ai chunk", () => {
 
 test('the QR decoder is loaded on demand', () => {
   assert.ok(!staticImports(read('components/HostTotpFields.tsx')).includes('jsqr'));
+});
+
+test('the splash screen shows the current quoll mark', () => {
+  const html = read('index.html');
+  assert.match(html, /splash-logo" src="\/icon\.svg"/);
+  assert.ok(!html.includes('logo.svg'), 'splash must not reference the retired logo.svg');
+  // The pre-rebrand artwork lingered in public/ after the icon overhaul; keep
+  // it deleted so nothing can start referencing it again.
+  assert.ok(!existsSync(join(root, 'public', 'logo.svg')), 'retired logo.svg must stay deleted');
+  assert.ok(!existsSync(join(root, 'public', 'tray-iconTemplate.svg')), 'retired tray-iconTemplate.svg must stay deleted');
 });

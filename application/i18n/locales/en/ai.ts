@@ -742,8 +742,6 @@ export const enAiMessages: Messages = {
   'terminal.layer.dockBottom': 'Bottom',
   'terminal.layer.closePanel': 'Close panel',
   'terminal.layer.closePane': 'Close split',
-  'terminal.layer.saveLayoutAsDefault': 'Save layout as default',
-  'terminal.layer.layoutSavedAsDefault': 'Layout saved as default',
   'terminal.layer.layoutSaveFailed': 'Could not save layout',
   'terminal.layer.resizeSplit': 'Resize split',
   'terminal.layer.splitHorizontal': 'Split top and bottom',

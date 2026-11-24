@@ -313,6 +313,306 @@ test("redis_key_get reads type/ttl/value and reports missing keys", async () => 
   assert.equal(miss.exists, false);
 });
 
+// ---- new-dialect fakes / helpers ----
+
+/**
+ * mssql pool compatible with mssqlBridge.runLimitedQuery / runQuery, modelling
+ * tedious's min:0/max:10 pool with >1 underlying connections: every
+ * pool.request() round-robins to the NEXT connection, so separate pool
+ * requests can land on different connections. A Transaction from
+ * makeFakeMssqlTxDriver instead leases ONE connection at begin() and holds it
+ * until rollback/commit — the exact binding runReadOnlyBatch relies on.
+ */
+function makeFakeMssqlPool() {
+  const calls = [];
+  const connections = Array.from({ length: 3 }, () => ({ calls: [], leasedBy: null }));
+  let next = 0;
+  const respond = (text) => {
+    if (/^BEGIN TRANSACTION$/i.test(text) || /^ROLLBACK$/i.test(text)) return { recordsets: [], rowsAffected: [0] };
+    if (/INFORMATION_SCHEMA\.TABLES/i.test(text)) {
+      return { recordsets: [[{ schema: "dbo", name: "users", kind: "BASE TABLE" }]], rowsAffected: [0] };
+    }
+    if (/INFORMATION_SCHEMA\.COLUMNS/i.test(text)) {
+      return { recordsets: [[{ COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null }]], rowsAffected: [0] };
+    }
+    if (/TABLE_CONSTRAINTS/i.test(text)) {
+      return { recordsets: [[{ column_name: "id" }]], rowsAffected: [0] };
+    }
+    if (/^SELECT/i.test(text)) return { recordsets: [[{ id: 1, name: "a" }]], rowsAffected: [0] };
+    return { recordsets: [], rowsAffected: [3] };
+  };
+  const pool = {
+    calls,
+    connections,
+    transactions: [],
+    respond,
+    request() {
+      // pool.request() takes an ARBITRARY connection — round-robining here
+      // proves runReadOnlyBatch cannot rely on pool-request affinity.
+      const conn = connections[next % connections.length];
+      next += 1;
+      return {
+        async query(sql) {
+          const text = String(sql);
+          calls.push(text);
+          conn.calls.push(text);
+          return respond(text);
+        },
+      };
+    },
+  };
+  return pool;
+}
+
+/**
+ * Minimal tedious-shaped driver for mssqlBridge.runReadOnlyBatch: new
+ * Transaction(pool).begin() acquires and holds ONE underlying connection;
+ * new Request(tx) executes on exactly that connection (BEGIN/ROLLBACK log
+ * onto it the way the real driver's begin/rollback wire messages do).
+ */
+function makeFakeMssqlTxDriver() {
+  class Transaction {
+    constructor(pool) { this.pool = pool; this.conn = null; pool.transactions.push(this); }
+    async begin() {
+      const free = this.pool.connections.find((c) => c.leasedBy === null);
+      if (!free) throw new Error("pool exhausted: no free connection");
+      free.leasedBy = this;
+      this.conn = free;
+      this.pool.calls.push("BEGIN TRANSACTION");
+      this.conn.calls.push("BEGIN TRANSACTION");
+    }
+    async rollback() { this.release("ROLLBACK"); }
+    async commit() { this.release("COMMIT"); }
+    release(marker) {
+      if (!this.conn) return;
+      this.pool.calls.push(marker);
+      this.conn.calls.push(marker);
+      this.conn.leasedBy = null;
+      this.conn = null;
+    }
+  }
+  class Request {
+    constructor(tx, _overrides) { this.tx = tx; }
+    async query(sql) {
+      const text = String(sql);
+      if (!this.tx.conn) throw new Error("transaction has no leased connection");
+      this.tx.pool.calls.push(text);
+      this.tx.conn.calls.push(text);
+      return this.tx.pool.respond(text);
+    }
+  }
+  return { Transaction, Request };
+}
+
+/** Real node:sqlite DatabaseSync over a temp file, registered in the registry. */
+function registerSqliteConnection(registry, { withView = false } = {}) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { DatabaseSync } = require("node:sqlite");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qd-dbsvc-sqlite-"));
+  const filePath = path.join(dir, "notes.db");
+  const db = new DatabaseSync(filePath);
+  db.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL)");
+  db.exec("INSERT INTO notes (title) VALUES ('seed')");
+  if (withView) db.exec("CREATE VIEW v_notes AS SELECT id FROM notes");
+  const cleanup = () => {
+    try { db.close(); } catch { /* ignore */ }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+  const connectionId = registry.registerConnection({
+    dialect: "sqlite", senderId: 1, client: { db, filePath, readOnly: false }, close: cleanup,
+    meta: { hostname: filePath, port: null, database: "notes.db", username: null },
+  });
+  return { connectionId, db, cleanup };
+}
+
+// ---- new-dialect routing ----
+
+test("mariadb schema/query/execute route through the mysql-family path", async () => {
+  const { service, registry } = setup();
+  const conn = makeFakeMysqlConn((sql) => {
+    if (/information_schema\.tables/i.test(sql)) return { fields: [{ name: "schema" }, { name: "name" }, { name: "kind" }], rows: [{ schema: "shop", name: "users", kind: "BASE TABLE" }] };
+    if (/information_schema\.columns/i.test(sql)) return { fields: [{ name: "column_name" }], rows: [{ column_name: "id", data_type: "int", is_nullable: "NO", column_default: null, column_key: "PRI" }] };
+    if (/^SELECT/i.test(sql)) return { fields: [{ name: "id" }], rows: [{ id: 1 }] };
+    return { fields: null, rows: [], okPacket: { affectedRows: 2 } };
+  });
+  const mariaId = registry.registerConnection({
+    dialect: "mariadb", senderId: 1, client: { conn }, close() {},
+    meta: { hostname: "maria.local", port: 3306, database: "shop", username: "app" },
+  });
+
+  const tables = await service.schema({ connectionId: mariaId });
+  assert.equal(tables.ok, true);
+  assert.match(conn.calls[0], /information_schema\.tables/); // same family metadata SQL, no duplicate branch
+  assert.deepEqual(tables.tables, [{ schema: "shop", name: "users", kind: "BASE TABLE" }]);
+
+  const columns = await service.schema({ connectionId: mariaId, table: "users" });
+  assert.equal(columns.ok, true);
+  assert.deepEqual(columns.primaryKey, ["id"]);
+
+  const query = await service.query({ connectionId: mariaId, sql: "SELECT id FROM t" });
+  assert.equal(query.ok, true);
+  assert.equal(query.dialect, "mariadb");
+  assert.equal(query.readOnly, true);
+  // mysql-family READ ONLY transaction wrapper (readOnlyTransaction("mariadb"))
+  assert.deepEqual(conn.calls.slice(2), ["START TRANSACTION READ ONLY", "SELECT id FROM t", "ROLLBACK"]);
+
+  const exec = await service.execute({ connectionId: mariaId, sql: "UPDATE t SET a=1" });
+  assert.equal(exec.ok, true);
+  assert.equal(exec.dialect, "mariadb"); // no hardcoded "mysql" label
+  assert.equal(exec.resultSets[0].affectedRows, 2);
+});
+
+test("sqlite query gate: SELECT passes under BEGIN/ROLLBACK, INSERT rejected, execute INSERT persists", async () => {
+  const { service, registry } = setup();
+  const { connectionId, db, cleanup } = registerSqliteConnection(registry);
+  try {
+    const denied = await service.query({ connectionId, sql: "INSERT INTO notes (title) VALUES ('x')" });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.code, "READ_ONLY_VIOLATION");
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM notes").get().c, 1); // gate fired before any exec
+
+    const sel = await service.query({ connectionId, sql: "SELECT id, title FROM notes ORDER BY id" });
+    assert.equal(sel.ok, true);
+    assert.equal(sel.dialect, "sqlite");
+    assert.equal(sel.readOnly, true);
+    assert.deepEqual(sel.resultSets[0].rows, [{ id: "1", title: "seed" }]);
+    assert.equal(sel.resultSets[0].truncated, false);
+
+    const ins = await service.execute({ connectionId, sql: "INSERT INTO notes (title) VALUES ('written-by-ai')" });
+    assert.equal(ins.ok, true);
+    assert.equal(ins.dialect, "sqlite");
+    assert.equal(ins.resultSets[0].affectedRows, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM notes WHERE title = 'written-by-ai'").get().c, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("sqlite schema: sqlite_master listing + pragma table_info columns/pk", async () => {
+  const { service, registry } = setup();
+  const { connectionId, cleanup } = registerSqliteConnection(registry, { withView: true });
+  try {
+    const tables = await service.schema({ connectionId });
+    assert.equal(tables.ok, true);
+    assert.deepEqual(tables.tables, [
+      { schema: "notes.db", name: "notes", kind: "BASE TABLE" },
+      { schema: "notes.db", name: "v_notes", kind: "VIEW" },
+    ]);
+    const columns = await service.schema({ connectionId, table: "notes" });
+    assert.equal(columns.ok, true);
+    assert.equal(columns.table, "notes");
+    assert.deepEqual(columns.columns.map((c) => c.column_name), ["id", "title"]);
+    assert.equal(columns.columns[0].data_type, "INTEGER");
+    assert.equal(columns.columns[1].is_nullable, "NO"); // title TEXT NOT NULL
+    assert.deepEqual(columns.primaryKey, ["id"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("mssql schema calls runLimitedQuery metadata and maps rows", async () => {
+  const { service, registry } = setup();
+  const pool = makeFakeMssqlPool();
+  const mssqlId = registry.registerConnection({
+    dialect: "mssql", senderId: 1, client: { pool }, close() {},
+    meta: { hostname: "sql.local", port: 1433, database: "app", username: "sa" },
+  });
+  const tables = await service.schema({ connectionId: mssqlId });
+  assert.equal(tables.ok, true);
+  assert.match(pool.calls[0], /INFORMATION_SCHEMA\.TABLES/);
+  assert.deepEqual(tables.tables, [{ schema: "dbo", name: "users", kind: "BASE TABLE" }]);
+
+  const columns = await service.schema({ connectionId: mssqlId, table: "users" });
+  assert.equal(columns.ok, true);
+  assert.deepEqual(columns.columns[0], { COLUMN_NAME: "id", DATA_TYPE: "int", IS_NULLABLE: "NO", COLUMN_DEFAULT: null });
+  assert.deepEqual(columns.primaryKey, ["id"]);
+  assert.match(pool.calls.at(-1), /TABLE_CONSTRAINTS/);
+});
+
+test("mssql query binds BEGIN/query/ROLLBACK to ONE connection and rejects writes", async () => {
+  const { service, registry } = setup();
+  const mssqlBridge = require("../../bridges/mssqlBridge.cjs");
+  const pool = makeFakeMssqlPool();
+  const mssqlId = registry.registerConnection({
+    dialect: "mssql", senderId: 1, client: { pool }, close() {},
+    meta: { hostname: "sql.local", port: 1433, database: "app", username: "sa" },
+  });
+  const denied = await service.query({ connectionId: mssqlId, sql: "UPDATE users SET name='b'" });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.code, "READ_ONLY_VIOLATION");
+  assert.deepEqual(pool.calls, []); // keyword gate fires before any pool request
+
+  mssqlBridge._setDriverForTests(makeFakeMssqlTxDriver());
+  try {
+    const res = await service.query({ connectionId: mssqlId, sql: "SELECT id FROM users" });
+    assert.equal(res.ok, true);
+    assert.equal(res.dialect, "mssql");
+    assert.equal(res.readOnly, true);
+    assert.equal(pool.calls[0], "BEGIN TRANSACTION");
+    assert.equal(pool.calls.at(-1), "ROLLBACK");
+    assert.deepEqual(res.resultSets[0].columns, [{ name: "id" }, { name: "name" }]);
+    assert.deepEqual(res.resultSets[0].rows, [{ id: "1", name: "a" }]);
+
+    // The pool round-robins pool.request() over 3 underlying connections, so
+    // the whole read-only batch (BEGIN → SELECT → ROLLBACK) landing on exactly
+    // ONE of them proves the Transaction pinned a single connection — a
+    // scattered batch would run outside the transaction (SELECT ... INTO
+    // would persist) and leave the ROLLBACK leaking on another connection.
+    const touched = pool.connections.filter((c) => c.calls.length > 0);
+    assert.equal(touched.length, 1);
+    assert.deepEqual(touched[0].calls, ["BEGIN TRANSACTION", "SELECT id FROM users", "ROLLBACK"]);
+
+    // The read path never commits and releases its leased connection (no
+    // leaked transaction blocking applyTableChanges).
+    assert.ok(!pool.calls.includes("COMMIT"));
+    assert.equal(pool.transactions.length, 1);
+    assert.ok(pool.connections.every((c) => c.leasedBy === null));
+  } finally {
+    mssqlBridge._setDriverForTests(undefined);
+  }
+});
+
+test("mssql execute returns the rowsAffected aggregate", async () => {
+  const { service, registry } = setup();
+  const pool = makeFakeMssqlPool();
+  const mssqlId = registry.registerConnection({
+    dialect: "mssql", senderId: 1, client: { pool }, close() {},
+    meta: { hostname: "sql.local", port: 1433, database: "app", username: "sa" },
+  });
+  const res = await service.execute({ connectionId: mssqlId, sql: "UPDATE users SET name='b'" });
+  assert.equal(res.ok, true);
+  assert.equal(res.dialect, "mssql");
+  assert.deepEqual(pool.calls, ["UPDATE users SET name='b'"]);
+  assert.equal(res.resultSets[0].affectedRows, 3);
+});
+
+test("database/connections/list exposes mariadb/mssql/sqlite dialects", async () => {
+  const { service, registry } = setup();
+  const pool = makeFakeMssqlPool();
+  registry.registerConnection({
+    dialect: "mariadb", senderId: 1, client: { conn: makeFakeMysqlConn(() => ({ rows: [] })) }, close() {},
+    meta: { hostname: "maria.local", port: 3306, database: "shop", username: null },
+  });
+  registry.registerConnection({
+    dialect: "mssql", senderId: 1, client: { pool }, close() {},
+    meta: { hostname: "sql.local", port: 1433, database: "app", username: "sa" },
+  });
+  registry.registerConnection({
+    dialect: "sqlite", senderId: 1, client: {}, close() {},
+    meta: { hostname: "/tmp/notes.db", port: null, database: "notes.db", username: null },
+  });
+  const all = await service.listConnections({});
+  const dialects = all.connections.map((c) => c.dialect);
+  for (const d of ["mysql", "postgresql", "redis", "mariadb", "mssql", "sqlite"]) {
+    assert.ok(dialects.includes(d), `missing ${d}`);
+  }
+  const mariadbOnly = await service.listConnections({ dialect: "mariadb" });
+  assert.equal(mariadbOnly.connections.length, 1);
+  assert.equal(mariadbOnly.connections[0].database, "shop");
+});
+
 test("redis_key_edit maps actions to commands and validates params", async () => {
   const { service, ids, redisDial } = setup();
   const expire = await service.redisEditKey({ connectionId: ids.redisId, action: "expire", key: "k", ttlSeconds: 60 });

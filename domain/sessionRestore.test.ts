@@ -13,6 +13,7 @@ import {
   shouldAttemptRestoreCwd,
 } from "./sessionRestore.ts";
 import { collectSessionIds, movePaneInWorkspace } from "./workspace.ts";
+import { normalizeSqlConfig } from "./models/database.ts";
 import type { TerminalSession, Workspace } from "./models.ts";
 
 const session = (id: string, workspaceId?: string): TerminalSession => ({
@@ -693,6 +694,24 @@ test("sanitizeSessionRestorePayload drops invalid protocol and shell type enum v
 
   assert.equal(sanitized.sessions[0].protocol, undefined);
   assert.equal(sanitized.sessions[0].shellType, undefined);
+});
+
+test("restore roundtrip keeps the sqlite protocol and sqlConfig.filePath", () => {
+  const payload = buildSessionRestorePayload({
+    sessions: [{ ...session("s1"), protocol: "sqlite" }],
+    workspaces: [],
+    tabOrder: ["s1"],
+    activeTabId: "s1",
+    now: 123,
+  });
+  const restored = sanitizeSessionRestorePayload(JSON.parse(JSON.stringify(payload)));
+  assert.equal(restored.sessions[0].protocol, "sqlite");
+
+  // sqlConfig.filePath 保留：normalizeSqlConfig 白名单保留 SQLite 文件路径。
+  assert.deepEqual(
+    normalizeSqlConfig({ filePath: " /tmp/quoll.sqlite ", junk: 1 }),
+    { filePath: "/tmp/quoll.sqlite" },
+  );
 });
 
 test("sanitizeSessionRestorePayload preserves database protocols in the whitelist", () => {

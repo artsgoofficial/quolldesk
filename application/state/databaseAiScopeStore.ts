@@ -7,11 +7,13 @@
  * registry — this store mirrors what the renderer knows.
  */
 
+import type { SqlEngineId } from '../../domain/models/dbEngines';
+
 export type DatabaseAiConnectionInfo = {
   connectionId: string;
   /** Workbench tab session id (the AI panel's tab scope key). */
   sessionId?: string;
-  dialect: 'redis' | 'mysql' | 'postgresql';
+  dialect: 'redis' | SqlEngineId;
   hostname?: string | null;
   port?: number | null;
   /** Database name; a numeric logical db index for Redis. */

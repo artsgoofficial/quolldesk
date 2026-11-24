@@ -420,6 +420,8 @@ export const zhCNCoreMessages: Messages = {
 
   // Settings > Application
   'settings.application.checkUpdates': '检查更新',
+  'settings.application.section.about': '关于',
+  'settings.application.section.community': '参与贡献',
   'settings.application.reportProblem': '反馈问题',
   'settings.application.reportProblem.subtitle': '生成预填的 GitHub issue',
   'settings.application.community': '社区',
@@ -803,7 +805,7 @@ Vaults 标签保持扁平，不使用这块背景。
   'vault.hosts.header.live': '{count} 个在线',
 
   // Vault hosts header/actions
-  'vault.hosts.search.placeholder': '查找主机或 ssh user@hostname / ssh -p 2222 user@hostname…',
+  'vault.hosts.search.placeholder': '查找主机或粘贴 ssh 命令…',
   'vault.hosts.connect': '连接',
   'vault.hosts.openSftp': '打开 SFTP',
   'vault.view.grid': '网格',
@@ -829,6 +831,9 @@ Vaults 标签保持扁平，不使用这块背景。
   'vault.hosts.copyCredentials': '复制账密信息',
   'vault.hosts.copyCredentials.toast.success': '账密信息已复制到剪贴板',
   'vault.hosts.copyCredentials.toast.noPassword': '该主机未保存密码',
+  'vault.hosts.copyConnectionString': '复制连接字符串',
+  'vault.hosts.copyConnectionString.toast.success': '连接字符串已复制到剪贴板',
+  'vault.hosts.copyConnectionString.toast.error': '复制连接字符串失败',
   'vault.hosts.multiSelect': '多选',
   'vault.hosts.selected': '已选择 {count} 项',
   'vault.hosts.selectedSummary': '已选择 {hosts} 个主机和 {groups} 个分组',
@@ -879,6 +884,11 @@ Vaults 标签保持扁平，不使用这块背景。
   'vault.import.finalshell.folderDesc': '导入全部 JSON 连接，并保留目录结构。',
   'vault.import.finalshell.file': '单个连接文件',
   'vault.import.finalshell.fileDesc': '导入一个 FinalShell JSON 连接。',
+  'vault.import.xshell.promptTitle': '从 Xshell 导入',
+  'vault.import.xshell.folder': 'Sessions 文件夹',
+  'vault.import.xshell.folderDesc': '导入全部 .xsh 会话，并保留目录结构。',
+  'vault.import.xshell.file': '单个会话文件',
+  'vault.import.xshell.fileDesc': '导入一个 Xshell .xsh 会话。',
   'vault.import.csv.tip': '批量导入：可使用 CSV 模板填写后导入。',
   'vault.import.csv.downloadTemplate': '下载 CSV 模板',
   'vault.import.toast.start': '正在从 {format} 导入...',
@@ -1061,6 +1071,7 @@ Vaults 标签保持扁平，不使用这块背景。
   'sftp.copyToOtherPane.unavailable': '请打开双栏 SFTP 文件管理，并连接目标侧后再复制文件。',
   'sftp.copyCurrentPath': '复制当前路径',
   'sftp.copyCurrentPath.success': '已复制当前路径',
+  'common.copied': '已复制',
   'sftp.copyCurrentPath.error': '无法复制当前路径',
   'sftp.viewMode.label': '视图模式',
   'sftp.viewMode.list': '列表视图',

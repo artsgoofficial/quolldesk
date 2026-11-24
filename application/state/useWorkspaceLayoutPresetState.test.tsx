@@ -150,3 +150,77 @@ test('saving falls back to false when persistence rejects the write', async () =
     globals.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
 });
+
+test('database sessions prune terminal-bound panes from the saved default', async () => {
+  const values = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const globals = globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
+    localStorage?: typeof fakeStorage;
+  };
+  const previousActEnvironment = globals.IS_REACT_ACT_ENVIRONMENT;
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  globals.IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: fakeStorage,
+    configurable: true,
+  });
+
+  let state: ReturnType<typeof useWorkspaceLayoutPresetState> | null = null;
+  const Probe = () => {
+    state = useWorkspaceLayoutPresetState();
+    return null;
+  };
+
+  try {
+    await act(async () => {
+      create(React.createElement(Probe));
+    });
+    assert.ok(state);
+
+    // scripts + sftp default: a Redis session has no shell-capable pane left.
+    await act(async () => {
+      state?.saveWorkspaceLayoutAsDefault(buildSplitLayout());
+    });
+    assert.equal(state.resolveDefaultLayoutForSession({ protocol: 'redis' }), null);
+    assert.equal(state.resolveDefaultLayoutForSession({ protocol: 'postgresql' }), null);
+
+    // ai + notes default survives database sessions unchanged.
+    let aiNotes: SidePanelLayout = createSidePanelLayout('ai', 'pane-ai');
+    aiNotes = splitSidePanelPane(aiNotes, 'pane-ai', 'notes', 'horizontal', {
+      paneId: 'pane-notes',
+      splitId: 'split-ai-notes',
+    }, 400);
+    await act(async () => {
+      state?.saveWorkspaceLayoutAsDefault(aiNotes);
+    });
+    const redisResolved = state.resolveDefaultLayoutForSession({ protocol: 'redis' });
+    assert.ok(redisResolved);
+    assert.deepEqual(
+      collectSidePanelPanes(redisResolved.layout.root).map((pane) => pane.tool),
+      ['ai', 'notes'],
+    );
+
+    // Shell-capable sessions still take terminal-bound panes.
+    await act(async () => {
+      state?.saveWorkspaceLayoutAsDefault(buildSplitLayout());
+    });
+    const sshResolved = state.resolveDefaultLayoutForSession({ protocol: 'ssh' });
+    assert.ok(sshResolved);
+    assert.deepEqual(
+      collectSidePanelPanes(sshResolved.layout.root).map((pane) => pane.tool),
+      ['scripts', 'sftp'],
+    );
+  } finally {
+    if (previousLocalStorage) {
+      Object.defineProperty(globalThis, 'localStorage', previousLocalStorage);
+    } else {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+    globals.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+  }
+});

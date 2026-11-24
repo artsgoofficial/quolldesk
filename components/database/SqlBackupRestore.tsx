@@ -5,11 +5,12 @@ import { useI18n } from '../../application/i18n/I18nProvider';
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { DbJobProgress } from '../../types/global/quolldesk-bridge-database';
+import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { Button } from '../ui/button';
 
 interface SqlBackupRestoreProps {
   connectionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   /** Currently selected table in the workbench; 当前表 scope is disabled without it. */
   table?: string;
   /** pg schema of `table` (defaults to public on the bridge). */
@@ -100,6 +101,8 @@ const SqlBackupRestore: React.FC<SqlBackupRestoreProps> = ({ connectionId, diale
     setBackupOutFile(null);
     setBackupProgress(null);
     try {
+      // dbName arrives via dbHostDatabaseName (file-backed engines already
+      // reduced to the bare file name), so it names the dump directly.
       const defaultName = `${dbName || 'db'}_${scope}_${dateStamp(new Date())}.sql`;
       const picked = await client.pickBackupPath(defaultName);
       if (!picked.path) return; // dialog cancelled
@@ -168,7 +171,7 @@ const SqlBackupRestore: React.FC<SqlBackupRestoreProps> = ({ connectionId, diale
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto p-4 space-y-6 text-xs max-w-[640px]">
+      <div className="flex-1 min-h-0 overflow-auto p-4 space-y-6 text-xs max-w-[640px] mx-auto">
         {/* ---- 备份 ---- */}
         <section className="space-y-3">
           <h3 className="text-sm font-medium">{t('db.backup.section')}</h3>
@@ -209,7 +212,7 @@ const SqlBackupRestore: React.FC<SqlBackupRestoreProps> = ({ connectionId, diale
                 )}
               </p>
               <div className="h-1.5 rounded bg-muted overflow-hidden">
-                <div className="h-full bg-sky-500 transition-all"
+                <div className="h-full bg-primary transition-all"
                   style={{ width: `${backupPct == null ? 15 : Math.max(3, backupPct)}%` }} />
               </div>
             </div>
@@ -240,7 +243,7 @@ const SqlBackupRestore: React.FC<SqlBackupRestoreProps> = ({ connectionId, diale
             <div className="space-y-1">
               <p className="text-muted-foreground">{restoreProgress.done}/{restoreProgress.total}</p>
               <div className="h-1.5 rounded bg-muted overflow-hidden">
-                <div className="h-full bg-sky-500 transition-all"
+                <div className="h-full bg-primary transition-all"
                   style={{ width: `${restoreProgress.total ? Math.max(3, Math.round((restoreProgress.done / restoreProgress.total) * 100)) : 3}%` }} />
               </div>
             </div>

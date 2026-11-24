@@ -2430,7 +2430,7 @@
     "toolName": "database_schema",
     "rpcMethod": "database/schema",
     "localExecution": false,
-    "description": "Get schema metadata for an open MySQL/PostgreSQL connection. Without `table`: list tables (schema, name, kind). With `table`: return that table's columns (name, data type, nullable, default, primary key flag). Always inspect the schema before writing SQL so identifiers and columns actually exist.",
+    "description": "Get schema metadata for an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection. Without `table`: list tables (schema, name, kind). With `table`: return that table's columns (name, data type, nullable, default, primary key flag). Always inspect the schema before writing SQL so identifiers and columns actually exist.",
     "inputShape": {
       "connectionId": {
         "type": "string",
@@ -2464,7 +2464,7 @@
     "toolName": "database_query",
     "rpcMethod": "database/query",
     "localExecution": false,
-    "description": "Run READ-ONLY SQL on an open MySQL/PostgreSQL connection (SELECT / SHOW / EXPLAIN / DESC / WITH…SELECT). Executed inside a READ ONLY transaction; any write attempt is rejected — use database_execute for writes. Multiple statements are allowed but every statement must be read-only. Rows and cells may be truncated.",
+    "description": "Run READ-ONLY SQL on an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection — only statements the engine's read-only keyword gate allows (SELECT/WITH queries, plus engine forms like MySQL/MariaDB SHOW/EXPLAIN/DESC or SQLite PRAGMA). Executed inside a READ ONLY transaction where the engine supports one; any write attempt is rejected — use database_execute for writes. Multiple statements are allowed but every statement must be read-only. Rows and cells may be truncated.",
     "inputShape": {
       "connectionId": {
         "type": "string",
@@ -2498,7 +2498,7 @@
     "toolName": "database_execute",
     "rpcMethod": "database/execute",
     "localExecution": false,
-    "description": "Execute SQL that mutates data or schema on an open MySQL/PostgreSQL connection (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE…). Requires user approval in confirm mode and is blocked in observer mode. Re-verify WHERE clauses on UPDATE/DELETE; the user sees the full SQL in the approval prompt.",
+    "description": "Execute SQL that mutates data or schema on an open MySQL/PostgreSQL/MariaDB/SQL Server/SQLite connection (INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE…). Requires user approval in confirm mode and is blocked in observer mode. Re-verify WHERE clauses on UPDATE/DELETE; the user sees the full SQL in the approval prompt.",
     "inputShape": {
       "connectionId": {
         "type": "string",

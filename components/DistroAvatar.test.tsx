@@ -102,3 +102,33 @@ test("DistroAvatar renders the FreeBSD logo for a detected FreeBSD host", () => 
 test("FreeBSD is available as a manual host icon choice", () => {
   assert.ok(LINUX_DISTRO_OPTION_IDS.includes("freebsd"));
 });
+
+test("DistroAvatar renders db hosts with their protocol accent and database glyph", () => {
+  const redis = renderToStaticMarkup(
+    <DistroAvatar host={{ ...baseHost, protocol: "redis" }} fallback="R" />,
+  );
+  assert.match(redis, /background-color:#D44B4B/i);
+  assert.doesNotMatch(redis, /src="/);
+
+  const mysql = renderToStaticMarkup(
+    <DistroAvatar host={{ ...baseHost, protocol: "mysql" }} fallback="M" />,
+  );
+  assert.match(mysql, /background-color:#1E7BA8/i);
+
+  const postgres = renderToStaticMarkup(
+    <DistroAvatar host={{ ...baseHost, protocol: "postgresql" }} fallback="P" />,
+  );
+  assert.match(postgres, /background-color:#336791/i);
+});
+
+test("DistroAvatar db accent yields to an explicitly picked host icon", () => {
+  const markup = renderToStaticMarkup(
+    <DistroAvatar
+      host={{ ...baseHost, protocol: "redis", iconMode: "custom", iconId: "database", iconColor: "green" }}
+      fallback="R"
+    />,
+  );
+
+  assert.match(markup, /background-color:#16A34A/i);
+  assert.doesNotMatch(markup, /#D44B4B/i);
+});

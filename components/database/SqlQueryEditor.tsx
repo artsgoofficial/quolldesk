@@ -1,5 +1,5 @@
 import Editor, { type OnMount, useMonaco } from '@monaco-editor/react';
-import { ChevronDown, ChevronUp, Download, History, Play, Plus, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlignLeft, ChevronDown, ChevronUp, Download, History, Play, Plus, Sparkles, Star, Trash2, X } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
@@ -21,18 +21,22 @@ import {
 } from '@/infrastructure/config/storageKeys';
 import { fetchSqlSchemaTree } from '@/infrastructure/services/sqlSchemaTreeCache';
 import type { SqlResultSet } from '../../types/global/quolldesk-bridge-database';
+import { SQL_ENGINES, SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
 import { emitAiPrompt, requestAiPanelOpen, subscribeSqlEditorAction } from '../../application/state/sqlEditorBridge';
 import { Button } from '../ui/button';
 import { Dropdown, DropdownContent, DropdownTrigger } from '../ui/dropdown';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { toast } from '../ui/toast';
 import { downloadCsv, downloadInserts, downloadJson } from './csv';
+import { formatSql } from './sqlFormat';
+import { extractBindVariables, substituteBindVariables } from './bindVariables';
 import { splitSqlStatements } from './splitSqlStatements';
 
 interface SqlQueryEditorProps {
   connectionId: string;
   /** Workbench tab session id — used to open the native AI side panel. */
   sessionId: string;
-  dialect: 'mysql' | 'postgresql';
+  dialect: SqlEngineId;
   /** Tree "新建查询" seeding: when token changes, open a new tab with sql. */
   seedQuery?: { sql: string; token: number };
 }
@@ -78,16 +82,17 @@ interface ExplainState {
 
 const EMPTY_EXPLAIN: ExplainState = { open: false, loading: false, error: null, resultSets: null, text: null };
 
-/** Query history / favorites persisted per dialect, most recent first. */
-interface DialectQueryLists { mysql: string[]; postgresql: string[] }
+/** Query history / favorites persisted per engine id, most recent first. */
+type EngineQueryLists = Record<SqlEngineId, string[]>;
 
 const QUERY_LIST_CAP = 50;
-const EMPTY_QUERY_LISTS: DialectQueryLists = { mysql: [], postgresql: [] };
+
+// Statement timeout for engines whose bridge honors one (registry
+// features.queryTimeout: mysql family + mssql clamp to 120s); pg never had
+// one and sqlite runs on a local file, so neither sends a value.
+const QUERY_TIMEOUT_MS = 120_000;
 
 configureMonacoLoader();
-
-// monaco basic-languages ships both ids (mysql -> sql, postgresql -> pgsql).
-const dialectToMonacoLanguage = (dialect: 'mysql' | 'postgresql') => (dialect === 'mysql' ? 'sql' : 'pgsql');
 
 const createTabId = (): string =>
   `qtab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -98,21 +103,24 @@ const statementLabel = (sql: string): string => {
   return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
 };
 
-const readQueryLists = (storageKey: string): DialectQueryLists => {
-  const stored = localStorageAdapter.read<DialectQueryLists>(storageKey);
-  if (!stored || !Array.isArray(stored.mysql) || !Array.isArray(stored.postgresql)) return EMPTY_QUERY_LISTS;
-  const keepStrings = (items: unknown[]) => items.filter((item): item is string => typeof item === 'string');
-  return { mysql: keepStrings(stored.mysql), postgresql: keepStrings(stored.postgresql) };
+const readQueryLists = (storageKey: string): EngineQueryLists => {
+  // Tolerant read: a snapshot written before an engine existed (or with a
+  // malformed slot) keeps its other engines' entries — mysql/pg history
+  // written by earlier versions survives untouched.
+  const stored = localStorageAdapter.read<Partial<EngineQueryLists>>(storageKey) ?? {};
+  const keepStrings = (items: unknown) =>
+    Array.isArray(items) ? items.filter((item): item is string => typeof item === 'string') : [];
+  return Object.fromEntries(SQL_ENGINES.map((e) => [e.id, keepStrings(stored[e.id])])) as EngineQueryLists;
 };
 
-/** Read-modify-write one dialect's persisted query list (history/favorites). */
+/** Read-modify-write one engine's persisted query list (history/favorites). */
 const updateQueryList = (
   storageKey: string,
-  current: DialectQueryLists,
-  dialectKey: 'mysql' | 'postgresql',
+  current: EngineQueryLists,
+  engineId: SqlEngineId,
   update: (items: string[]) => string[],
-): DialectQueryLists => {
-  const next: DialectQueryLists = { ...current, [dialectKey]: update(current[dialectKey]) };
+): EngineQueryLists => {
+  const next: EngineQueryLists = { ...current, [engineId]: update(current[engineId]) };
   localStorageAdapter.write(storageKey, next);
   return next;
 };
@@ -132,9 +140,9 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
   // Results are keyed by tab id so each tab restores its own result set on switch.
   const [resultsByTab, setResultsByTab] = useState<Record<string, TabResult>>({});
   const [runningTabId, setRunningTabId] = useState<string | null>(null);
-  // Query history and favorites persist per dialect via localStorageAdapter.
-  const [history, setHistory] = useState<DialectQueryLists>(() => readQueryLists(STORAGE_KEY_DB_QUERY_HISTORY));
-  const [favorites, setFavorites] = useState<DialectQueryLists>(() => readQueryLists(STORAGE_KEY_DB_QUERY_FAVORITES));
+  // Query history and favorites persist per engine id via localStorageAdapter.
+  const [history, setHistory] = useState<EngineQueryLists>(() => readQueryLists(STORAGE_KEY_DB_QUERY_HISTORY));
+  const [favorites, setFavorites] = useState<EngineQueryLists>(() => readQueryLists(STORAGE_KEY_DB_QUERY_FAVORITES));
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   const [panelMode, setPanelMode] = useState<'history' | 'favorites'>('history');
   const [exportOpen, setExportOpen] = useState(false);
@@ -159,10 +167,19 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
     setTabs((prev) => prev.map((tab) => (tab.id === activeTabId ? { ...tab, sql: next } : tab)));
   }, [activeTabId]);
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (sqlOverride?: string) => {
     const tabId = activeTabId;
-    const sql = tabs.find((tab) => tab.id === tabId)?.sql ?? '';
+    let sql = sqlOverride ?? tabs.find((tab) => tab.id === tabId)?.sql ?? '';
     if (runningTabId != null || !sql.trim()) return;
+    // Bind-variable interception: only prompts for editor-typed tokens (an
+    // override already went through the substitution pass).
+    if (!sqlOverride) {
+      const vars = extractBindVariables(sql);
+      if (vars.length > 0) {
+        setBindPrompt({ vars, sql });
+        return;
+      }
+    }
     // Statements run one by one so each SQL gets its own result tab; stop at
     // the first error, keeping earlier statements' results visible.
     const statements = splitSqlStatements(sql, dialect);
@@ -190,7 +207,11 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
     try {
       for (const statement of statements) {
         try {
-          const result = await client.query({ connectionId, sql: statement });
+          const result = await client.query({
+            connectionId,
+            sql: statement,
+            ...(SQL_ENGINE_BY_ID[dialect].features.queryTimeout ? { timeoutMs: QUERY_TIMEOUT_MS } : {}),
+          });
           entries.push({
             sql: statement,
             resultSets: result.resultSets,
@@ -224,13 +245,30 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
   const runRef = useRef(run);
   useEffect(() => { runRef.current = run; }, [run]);
 
+  // Format action: replaces the whole model through executeEdits so the undo
+  // stack survives (setValue would wipe it). No-op on empty or already-clean
+  // text; Shift+Alt+F is bound on editor mount (monaco swallows keydown).
+  const formatCurrent = useCallback(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const formatted = formatSql(dialect, model.getValue());
+    if (formatted === model.getValue()) return;
+    editor.executeEdits('sql-format', [{ range: model.getFullModelRange(), text: formatted }]);
+  }, [dialect]);
+  const formatRef = useRef(formatCurrent);
+  useEffect(() => { formatRef.current = formatCurrent; }, [formatCurrent]);
+
   // SQL intellisense context, shared with the completion providers through a
   // mutable object so a refreshed schemaTree reaches them without re-registering.
-  const sqlContextRef = useRef<SqlEditorContext>({ dialect, catalog: null });
+  // The parser dialect comes from the registry's completionDialect (mssql/
+  // sqlite degrade to the generic parser; dt-sql-parser has no tsql/sqlite).
+  const completionDialect = SQL_ENGINE_BY_ID[dialect].completionDialect;
+  const sqlContextRef = useRef<SqlEditorContext>({ dialect: completionDialect, catalog: null });
   const validationDisposableRef = useRef<{ dispose: () => void } | null>(null);
   useEffect(() => {
-    sqlContextRef.current.dialect = dialect;
-  }, [dialect]);
+    sqlContextRef.current.dialect = completionDialect;
+  }, [completionDialect]);
 
   // Schema tables/columns for completions; failures degrade to keyword-only hints.
   useEffect(() => {
@@ -242,7 +280,7 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
       .then((tree) => {
         if (!alive) return;
         sqlContextRef.current.catalog = new SqlSchemaCatalog({
-          dialect,
+          dialect: completionDialect,
           databases: tree.databases,
           fetchColumns: (args) => client.tableMeta({ connectionId, ...args })
             .then((meta) => meta.columns.map(({ name, type }) => ({ name, type }))),
@@ -252,10 +290,19 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
         if (alive) sqlContextRef.current.catalog = null;
       });
     return () => { alive = false; };
-  }, [connectionId, dialect, client]);
+  }, [connectionId, dialect, completionDialect, client]);
 
   const [explainByTab, setExplainByTab] = useState<Record<string, ExplainState>>({});
+  // Bind variables (DBeaver ${name}): when the script contains tokens, run()
+  // parks here pending user input; the dialog substitutes and re-invokes run.
+  const [bindPrompt, setBindPrompt] = useState<{ vars: string[]; sql: string } | null>(null);
+  const [bindValues, setBindValues] = useState<Record<string, string>>({});
+  const closeBindPrompt = useCallback(() => { setBindPrompt(null); setBindValues({}); }, []);
   const activeExplain = explainByTab[activeTab.id];
+
+  // EXPLAIN support is an engine feature (registry): mssql has no EXPLAIN
+  // statement, so the button stays disabled there.
+  const explainSupported = SQL_ENGINE_BY_ID[dialect].features.explain;
 
   // EXPLAIN guard: exactly one SELECT/WITH statement. A trailing ";" is
   // stripped (cosmetic), but any embedded ";" means a multi-statement script —
@@ -384,6 +431,10 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
     editor.addCommand(
       monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Enter,
       () => runRef.current(),
+    );
+    editor.addCommand(
+      monacoInstance.KeyMod.Shift | monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.KeyF,
+      () => formatRef.current(),
     );
     registerSqlCompletionProviders(monacoInstance);
     const model = editor.getModel();
@@ -515,7 +566,7 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
         <div className="flex-1 h-36 min-w-0 relative">
           <Editor
             height="100%"
-            language={dialectToMonacoLanguage(dialect)}
+            language={SQL_ENGINE_BY_ID[dialect].monacoLanguage}
             value={activeTab.sql}
             onChange={(next) => setSql(next ?? '')}
             onMount={handleEditorMount}
@@ -541,7 +592,13 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
             <Play size={13} className="mr-1" />{t('db.workbench.query.run')}
           </Button>
           <Button variant="outline" size="sm"
-            disabled={running || !activeTab.sql.trim() || !explainable}
+            disabled={!activeTab.sql.trim()}
+            title={t('db.query.format')}
+            onClick={() => formatRef.current()}>
+            <AlignLeft size={13} className="mr-1" />{t('db.query.format')}
+          </Button>
+          <Button variant="outline" size="sm"
+            disabled={running || !explainSupported || !activeTab.sql.trim() || !explainable}
             title={explainable ? t('db.query.explain') : t('db.query.explainOnlySelect')}
             onClick={() => void runExplain()}>
             {t('db.query.explain')}
@@ -565,6 +622,39 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
           </Button>
         </div>
       </div>
+      {bindPrompt && (
+        <Dialog open onOpenChange={(open) => { if (!open) closeBindPrompt(); }}>
+          <DialogContent className="max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>{t('db.query.bindTitle')}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2 text-xs">
+              {bindPrompt.vars.map((name, i) => (
+                <div key={name} className="flex items-center gap-2">
+                  <span className="w-28 shrink-0 font-mono text-muted-foreground truncate">${'{'}{name}{'}'}</span>
+                  <input
+                    autoFocus={i === 0}
+                    className="w-full min-w-0 h-6 px-1 bg-background border border-border rounded font-mono"
+                    autoComplete="off" spellCheck={false}
+                    value={bindValues[name] ?? ''}
+                    onChange={(e) => setBindValues((prev) => ({ ...prev, [name]: e.target.value }))}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => {
+                const substituted = substituteBindVariables(bindPrompt.sql, bindValues);
+                closeBindPrompt();
+                void runRef.current(substituted);
+              }}>
+                {t('db.query.bindRun')}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={closeBindPrompt}>{t('common.cancel')}</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
       {activeExplain && (
         <div className="border-b border-border/60 flex flex-col max-h-56">
           <div className="px-3 py-1 flex items-center gap-1 shrink-0">

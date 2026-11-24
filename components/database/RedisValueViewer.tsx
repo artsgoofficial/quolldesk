@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 // The @/ alias is the repo's sanctioned path for component-layer imports of
 // infrastructure services (relative ../../infrastructure imports are eslint-restricted).
@@ -327,29 +328,8 @@ const RedisValueViewer: React.FC<RedisValueViewerProps> = ({
           );
         })() : (
           <>
-            <table className="w-full border-collapse">
-              <tbody>
-                {renderedRows.map((row, i) => (
-                  <tr key={`${row.index}/${i}`} className="border-b border-border/40">
-                    <td className="py-1 pr-3 text-muted-foreground align-top whitespace-nowrap">{row.score != null ? `(${row.score}) ` : ''}{String(row.index)}</td>
-                    <td className="py-1 font-mono break-all">
-                      {row.jsonBody != null
-                        ? <pre className="whitespace-pre-wrap break-all font-mono m-0">{row.jsonBody}</pre>
-                        : String(row.value ?? '')}
-                    </td>
-                    {editable && (
-                      <td className="py-0.5 pl-2 align-top">
-                        <button type="button" disabled={saving}
-                          className="px-1.5 py-0.5 rounded text-[10px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                          onClick={() => void deleteRow(row)}>{t('db.action.delete')}</button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
             {editable && (
-              <div className="flex flex-wrap items-center gap-1 mt-2">
+              <div className="flex flex-wrap items-center gap-1 mb-2">
                 {meta?.type === 'hash' && (
                   <>
                     <Input className="h-7 w-36 text-xs" placeholder={t('db.redis.fieldPlaceholder')} value={hashField}
@@ -390,6 +370,29 @@ const RedisValueViewer: React.FC<RedisValueViewerProps> = ({
                 )}
               </div>
             )}
+            <table className="w-full border-collapse">
+              <tbody>
+                {renderedRows.map((row, i) => (
+                  <tr key={`${row.index}/${i}`} className="group border-b border-border/40">
+                    <td className="py-1 pr-3 text-muted-foreground align-top whitespace-nowrap">{row.score != null ? `(${row.score}) ` : ''}{String(row.index)}</td>
+                    <td className="py-1 font-mono break-all">
+                      {row.jsonBody != null
+                        ? <pre className="whitespace-pre-wrap break-all font-mono m-0">{row.jsonBody}</pre>
+                        : String(row.value ?? '')}
+                    </td>
+                    {editable && (
+                      <td className="py-0.5 pl-2 align-top">
+                        <button type="button" disabled={saving} aria-label={t('db.action.delete')} title={t('db.action.delete')}
+                          className="p-1 rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:text-destructive transition-opacity disabled:opacity-30"
+                          onClick={() => void deleteRow(row)}>
+                          <Trash2 size={13} />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </>
         )}
         {truncated && <p className="text-amber-500 text-xs mt-2">{t('db.workbench.truncated')}</p>}

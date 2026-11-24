@@ -1,12 +1,14 @@
-import { Copy, FileSymlink, Files, Folder, FolderOpen, Globe2, Monitor, Pencil, Plus, Server, Settings2 } from 'lucide-react';
+import { Copy, Database, FileSymlink, Files, Folder, FolderOpen, Globe2, Monitor, Pencil, Plus, Server, Settings2 } from 'lucide-react';
 import React from 'react';
 
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { requestOpenDualPaneSftp } from '../../application/state/sftp/sftpDualPaneOpenStore';
 import { useSettingsChromeStore } from '../../application/state/settingsChromeStore';
 import { sanitizeHost } from '../../domain/host';
+import { buildDbConnectionString, isDbProtocol } from '../../domain/models/database';
 import { isPluginHostProtocol } from '../../domain/pluginConnection';
 import { canOpenDualPaneSftp } from '../../domain/sftpDualPaneOpen';
+import { toast } from '../ui/toast';
 import type { Host } from '../../types';
 import { ContextMenuContent, ContextMenuItem, ContextMenuShortcut } from '../ui/context-menu';
 import { collectOwnedPluginMenus, comparePluginMenus, usePluginContributions } from '../../application/state/usePluginContributions';
@@ -38,6 +40,31 @@ export const OpenHostBrowserMenuItem: React.FC<{ host: Host; onOpenBrowser?: (ho
   const { t } = useI18n();
   if (!onOpenBrowser || (host.protocol && !['ssh', 'mosh', 'local'].includes(host.protocol))) return null;
   return <ContextMenuItem onClick={() => onOpenBrowser(host)}><Globe2 className="mr-2 h-4 w-4" /> {t('terminal.browser.open')}</ContextMenuItem>;
+};
+
+/**
+ * Self-contained db-only action: builds a shareable connection URL from the
+ * host record and copies it (clipboard + toast), mirroring how
+ * OpenDualPaneSftpMenuItem owns its own action. Stays out of the handler
+ * prop-drilling chain on purpose.
+ */
+export const CopyDbConnectionStringMenuItem: React.FC<{ host: Host }> = ({ host }) => {
+  const { t } = useI18n();
+  if (!isDbProtocol(host.protocol)) return null;
+  const connectionString = buildDbConnectionString(host);
+  if (!connectionString) return null;
+  return (
+    <ContextMenuItem
+      onClick={() => {
+        void navigator.clipboard.writeText(connectionString).then(
+          () => toast.success(t('vault.hosts.copyConnectionString.toast.success')),
+          () => toast.error(t('vault.hosts.copyConnectionString.toast.error')),
+        );
+      }}
+    >
+      <Database className="mr-2 h-4 w-4" /> {t('vault.hosts.copyConnectionString')}
+    </ContextMenuItem>
+  );
 };
 
 export const HostTreeHostContextMenuContent: React.FC<
@@ -72,7 +99,13 @@ export const HostTreeHostContextMenuContent: React.FC<
       <ContextMenuItem onClick={() => onConnect(safeHost)}>
         <Monitor className="mr-2 h-4 w-4" /> {t('vault.hosts.connect')}
       </ContextMenuItem>
-      <OpenDualPaneSftpMenuItem host={safeHost} />
+      {isDbProtocol(safeHost.protocol) ? (
+        // Database connections share the vault list but have no SFTP/SSH
+        // channel — they get their own copy-connection-string action instead.
+        <CopyDbConnectionStringMenuItem host={safeHost} />
+      ) : (
+        <OpenDualPaneSftpMenuItem host={safeHost} />
+      )}
       <OpenHostBrowserMenuItem host={safeHost} onOpenBrowser={onOpenBrowser} />
       {onEditHost && (
         <ContextMenuItem onClick={() => onEditHost(host)}>

@@ -1,0 +1,10 @@
+Switched to a new branch 'automation/nix-release-v1.1.0'
+[automation/nix-release-v1.1.0 488c78e] Update Nix release metadata for v1.1.0
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+remote: 
+remote: Create a pull request for 'automation/nix-release-v1.1.0' on GitHub by visiting:        
+remote:      https://github.com/artsgoofficial/quolldesk/pull/new/automation/nix-release-v1.1.0        
+remote: 
+To https://github.com/artsgoofficial/quolldesk
+ * [new branch]      HEAD -> automation/nix-release-v1.1.0
+pull request create failed: GraphQL: GitHub Actions is not permitted to create or approve pull requests (createPullRequest)

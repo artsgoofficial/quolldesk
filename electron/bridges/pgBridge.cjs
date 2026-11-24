@@ -388,6 +388,25 @@ async function runPgBackup({ event, client, connectionId, jobId, scope, schema, 
       }
     }
 
+    // Routines last (database scope only): CREATE OR REPLACE FUNCTION defs are
+    // self-contained and the restore splitter tolerates $$ bodies. Failure to
+    // read them (permissions) skips the section rather than failing the dump.
+    if (scope === "database") {
+      try {
+        const routines = (await runFullQuery(client,
+          "SELECT p.proname AS name, pg_get_functiondef(p.oid) AS def FROM pg_proc p " +
+          "JOIN pg_namespace n ON n.oid = p.pronamespace " +
+          "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND p.prokind IN ('f', 'p') " +
+          "ORDER BY p.proname")).rows;
+        if (routines.length > 0) {
+          await push({ phase: "routines" });
+          for (const routine of routines) {
+            if (!routine.def) continue;
+            await writer.write(`${routine.def};\n`);
+          }
+        }
+      } catch { /* routine dump is best-effort */ }
+    }
     await writer.end();
     push({ phase: "done", message: `dumped ${tablesDone} table(s) to ${outFile}`, tablesDone });
   } catch (err) {

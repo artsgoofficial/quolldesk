@@ -16,3 +16,7 @@ export function readWorkspaceLayoutPreset(): WorkspaceLayoutPreset | null {
 export function writeWorkspaceLayoutPreset(preset: WorkspaceLayoutPreset): boolean {
   return localStorageAdapter.write(STORAGE_KEY_WORKSPACE_LAYOUT_PRESET, preset);
 }
+
+export function clearWorkspaceLayoutPreset(): void {
+  localStorageAdapter.remove(STORAGE_KEY_WORKSPACE_LAYOUT_PRESET);
+}

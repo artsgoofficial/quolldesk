@@ -455,6 +455,9 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
       if (lower.includes("pg_trigger")) {
         return { rows: [{ name: "trg_docs", def: "CREATE TRIGGER trg_docs AFTER INSERT ON public.docs FOR EACH ROW EXECUTE FUNCTION trg_fn()" }] };
       }
+      if (lower.includes("pg_proc")) {
+        return { rows: [{ name: "demo_fn", def: "CREATE OR REPLACE FUNCTION public.demo_fn(p integer) RETURNS integer LANGUAGE plpgsql AS $$BEGIN RETURN p + 1;END;$$" }] };
+      }
       if (lower.includes('from "public"."docs"')) {
         return { rows, fields: [{ name: "id" }, { name: "doc" }, { name: "body" }, { name: "bin" }] };
       }
@@ -472,7 +475,8 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
   try {
     const conn = await call("quolldesk:pg:connect", { hostname: "pg", port: 5432, username: "postgres", password: "pw", config: { database: "app" } });
     const { connectionId } = conn.data;
-    const res = await call("quolldesk:pg:backup", { connectionId, scope: "table", schema: "public", table: "docs", includeData: true, outFile });
+    // Database scope so the routines section runs alongside per-table dumps.
+    const res = await call("quolldesk:pg:backup", { connectionId, scope: "database", includeData: true, outFile });
     assert.equal(res.ok, true, JSON.stringify(res));
     await waitForPush(pushes, "done");
 
@@ -505,6 +509,11 @@ test("pg backup dumps jsonb/long-text/bytea values intact (no grid cell truncati
     assert.ok(
       dump.includes('CREATE TRIGGER trg_docs AFTER INSERT ON public.docs FOR EACH ROW EXECUTE FUNCTION trg_fn();'),
       "dump must carry the trigger definition",
+    );
+    // Routines dump last as CREATE OR REPLACE FUNCTION with $$ bodies intact.
+    assert.ok(
+      dump.includes('CREATE OR REPLACE FUNCTION public.demo_fn(p integer) RETURNS integer LANGUAGE plpgsql AS $$BEGIN RETURN p + 1;END;$$;'),
+      "dump must carry the routine definition",
     );
 
     await call("quolldesk:pg:disconnect", { connectionId });

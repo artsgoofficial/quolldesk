@@ -5,6 +5,7 @@ import {
   flushQueuedTrayPanelConnectHostsImpl,
   handleConnectToHostImpl,
   handleKeyboardInteractiveSubmitImpl,
+  handleTrayPanelConnectImpl,
   handleTrayPanelConnectRequestImpl,
 } from './app/AppHandlers.ts';
 import { resolveHostAuth } from '../domain/sshAuth.ts';
@@ -86,6 +87,128 @@ test('connect serial host handler returns the created terminal tab id', () => {
   );
 
   assert.equal(result, 'serial-session');
+});
+
+test('reusing an open database tab skips the duplicate connection log', () => {
+  const logs: unknown[] = [];
+  const connectedHosts: Host[] = [];
+  const existingDbSession = {
+    id: 'db-existing',
+    hostId: 'host-1',
+    hostLabel: 'PG',
+    hostname: 'db.example.invalid',
+    username: '',
+    status: 'connected' as const,
+    protocol: 'postgresql' as const,
+  };
+  const result = handleConnectToHostImpl(
+    () => ({
+      addConnectionLog: (entry: unknown) => logs.push(entry),
+      connectToHost: (host: Host) => {
+        connectedHosts.push(host);
+        return 'db-existing';
+      },
+      identities: [],
+      keys: [],
+      resolveEffectiveHost: (host: Host) => host,
+      resolveHostAuth: () => ({ username: '' }),
+      sessions: [existingDbSession],
+      systemInfoRef: { current: { username: 'local-user', hostname: 'local-host' } },
+    }),
+    { ...baseHost, protocol: 'postgresql' },
+  );
+
+  assert.equal(result, 'db-existing');
+  assert.equal(connectedHosts.length, 1, 'connectToHost still runs so the hook can focus/redial the tab');
+  assert.equal(logs.length, 0, 'a reused tab is not a new connection');
+});
+
+test('a fresh database connection still writes the connection log', () => {
+  const logs: unknown[] = [];
+  const result = handleConnectToHostImpl(
+    () => ({
+      addConnectionLog: (entry: unknown) => logs.push(entry),
+      connectToHost: () => 'db-new',
+      identities: [],
+      keys: [],
+      resolveEffectiveHost: (host: Host) => host,
+      resolveHostAuth: () => ({ username: 'root' }),
+      sessions: [],
+      systemInfoRef: { current: { username: 'local-user', hostname: 'local-host' } },
+    }),
+    { ...baseHost, protocol: 'redis' },
+  );
+
+  assert.equal(result, 'db-new');
+  assert.equal(logs.length, 1);
+});
+
+test('hidden database opens keep creating their own logged session', () => {
+  const logs: unknown[] = [];
+  const existingDbSession = {
+    id: 'db-existing',
+    hostId: 'host-1',
+    hostLabel: 'PG',
+    hostname: 'db.example.invalid',
+    username: '',
+    status: 'connected' as const,
+    protocol: 'postgresql' as const,
+  };
+  let created = false;
+  const result = handleConnectToHostImpl(
+    () => ({
+      addConnectionLog: (entry: unknown) => logs.push(entry),
+      connectToHost: () => {
+        created = true;
+        return 'db-hidden-new';
+      },
+      identities: [],
+      keys: [],
+      resolveEffectiveHost: (host: Host) => host,
+      resolveHostAuth: () => ({ username: 'root' }),
+      sessions: [existingDbSession],
+      systemInfoRef: { current: { username: 'local-user', hostname: 'local-host' } },
+    }),
+    { ...baseHost, protocol: 'postgresql' },
+    true,
+  );
+
+  assert.equal(result, 'db-hidden-new');
+  assert.equal(created, true, 'hidden opens never steal the visible tab');
+  assert.equal(logs.length, 1);
+});
+
+test('tray panel connect reusing an open database tab skips the connection log', () => {
+  const logs: unknown[] = [];
+  const redisHost: Host = { ...baseHost, protocol: 'redis', port: 6379 };
+  const existingDbSession = {
+    id: 'db-tray-reuse',
+    hostId: 'host-1',
+    hostLabel: 'Redis',
+    hostname: '127.0.0.1',
+    username: '',
+    status: 'disconnected' as const,
+    protocol: 'redis' as const,
+  };
+  const result = handleTrayPanelConnectImpl(
+    () => ({
+      addConnectionLog: (entry: unknown) => logs.push(entry),
+      connectToHost: () => 'db-tray-reuse',
+      hosts: [redisHost],
+      identities: [],
+      keys: [],
+      resolveEffectiveHost: (host: Host) => host,
+      resolveHostAuth: () => ({ username: '' }),
+      sessions: [existingDbSession],
+      systemInfoRef: { current: { username: 'local-user', hostname: 'local-host' } },
+      t: (key: string) => key,
+      toast: { error: () => {} },
+    }),
+    'host-1',
+  );
+
+  assert.equal(result, 'db-tray-reuse');
+  assert.equal(logs.length, 0);
 });
 
 test('tray panel connect request queues until the vault is initialized', () => {

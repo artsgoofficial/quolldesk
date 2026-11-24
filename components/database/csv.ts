@@ -33,7 +33,8 @@ export function downloadJson(filename: string, columns: string[], rows: unknown[
   triggerDownload(filename, `${JSON.stringify(objects, null, 2)}\n`, 'application/json;charset=utf-8');
 }
 
-const sqlLiteral = (value: unknown): string =>
+/** SQL literal: single-quote-escaped (doubling), NULL for null. Shared with the bind-variable substitution. */
+export const sqlLiteral = (value: unknown): string =>
   value == null ? 'NULL' : `'${String(value).replace(/'/g, "''")}'`;
 
 /** SQL INSERT export: one statement per row, single-quote-escaped, NULL for null. */

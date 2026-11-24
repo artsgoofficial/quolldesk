@@ -14,6 +14,7 @@ import { downloadCsv, downloadInserts, downloadJson } from './csv';
 import { downloadXlsx } from './xlsxGrid';
 import { isBinaryCellValue } from './blobViewer';
 import BlobViewerDialog from './BlobViewerDialog';
+import { groupStats } from './gridGrouping';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import SqlImportWizard from './SqlImportWizard';
 
@@ -110,6 +111,8 @@ const SqlTableData: React.FC<SqlTableDataProps> = ({ connectionId, dialect, tabl
   // Record mode (DBeaver record form): one row rendered as label+input pairs
   // for wide-table convenience; saves through the same pendingUpdates path.
   const [recordRowKey, setRecordRowKey] = useState<string | null>(null);
+  // GROUP BY panel: aggregates the loaded view grouped by a chosen column.
+  const [groupByColumn, setGroupByColumn] = useState<string | null>(null);
   const [selected, setSelected] = useState<GridSelection | null>(null);
   const [pkColumn, setPkColumn] = useState<string | null>(null);
   const [foreignKeys, setForeignKeys] = useState<SqlForeignKeyMeta[]>([]);
@@ -383,6 +386,19 @@ const SqlTableData: React.FC<SqlTableDataProps> = ({ connectionId, dialect, tabl
     };
   }, [aggregateColumn, columns, displayRows]);
 
+  // GROUP BY panel: group the loaded view by the chosen column, summing the
+  // aggregate column when numeric.
+  const grouped = useMemo(() => {
+    if (!groupByColumn) return null;
+    const keyIdx = columns.findIndex((c) => c.name === groupByColumn);
+    if (keyIdx === -1) return null;
+    const valIdx = aggregateColumn ? columns.findIndex((c) => c.name === aggregateColumn) : -1;
+    return groupStats(displayRows.map((r) => ({
+      key: r.cells[keyIdx]?.value,
+      num: valIdx >= 0 ? r.cells[valIdx]?.value : null,
+    })));
+  }, [groupByColumn, aggregateColumn, columns, displayRows]);
+
   // Cell/row selection copy: resolve raw values from the derived view so the
   // clipboard matches what is displayed (including staged edits). Esc clears
   // the selection; Cmd/Ctrl+C copies the cell (or the whole row, tab-joined,
@@ -650,6 +666,31 @@ const SqlTableData: React.FC<SqlTableDataProps> = ({ connectionId, dialect, tabl
           </tbody>
         </table>
         {truncated && <p className="text-amber-500 text-xs px-3 py-2">{t('db.workbench.truncated')}</p>}
+        {grouped && grouped.length > 0 && (
+          <div className="border-t border-border/40 px-3 py-1.5 text-[11px]" data-testid="groupby-panel">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="text-left font-normal px-1.5 py-0.5">{groupByColumn}</th>
+                  <th className="text-left font-normal px-1.5 py-0.5">{t('db.aggregate.count')}</th>
+                  <th className="text-left font-normal px-1.5 py-0.5">{t('db.aggregate.sum')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grouped.slice(0, 100).map((g) => (
+                  <tr key={g.value} className="hover:bg-foreground/5">
+                    <td className="px-1.5 py-0.5 font-mono">{g.value}</td>
+                    <td className="px-1.5 py-0.5">{g.count}</td>
+                    <td className="px-1.5 py-0.5">{g.sum == null ? '—' : g.sum}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {grouped.length > 100 && (
+              <p className="text-muted-foreground pt-1">{t('db.aggregate.groupCapped', { count: grouped.length })}</p>
+            )}
+          </div>
+        )}
         {aggregate && (
           <div className="border-t border-border/40 px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-3 flex-wrap" data-testid="aggregate-footer">
             <span className="text-foreground font-medium">{aggregateColumn}</span>
@@ -663,6 +704,18 @@ const SqlTableData: React.FC<SqlTableDataProps> = ({ connectionId, dialect, tabl
               </>
             )}
             {!aggregate.numeric && <span>{t('db.aggregate.nonNumeric')}</span>}
+            <span className="flex items-center gap-1 ml-2">
+              {t('db.aggregate.groupBy')}
+              <select
+                className="h-5 rounded border border-border bg-background px-1 text-[11px]"
+                value={groupByColumn ?? ''}
+                onChange={(e) => setGroupByColumn(e.target.value === '' ? null : e.target.value)}>
+                <option value="">{t('db.aggregate.groupNone')}</option>
+                {columns.map((c) => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </span>
           </div>
         )}
       </div>

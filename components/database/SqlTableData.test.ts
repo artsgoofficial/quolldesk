@@ -32,3 +32,10 @@ test('record mode: row detail button opens a form dialog saving via pendingUpdat
   // saves reuse the exact pendingUpdates contract (cellKey + pk payload)
   assert.match(source, /next\[key\] = \{ pk: pkColumn, pkValue: recordRowKey, column: c\.name, value: change\.isNull \? null : change\.value \};/);
 });
+
+test('group by panel: footer select + grouped stats table capped at 100', () => {
+  assert.match(source, /groupByColumn/);
+  assert.match(source, /data-testid="groupby-panel"/);
+  assert.match(source, /groupStats\(displayRows\.map/);
+  assert.match(source, /db\.aggregate\.groupBy/);
+});

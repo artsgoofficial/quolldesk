@@ -113,7 +113,62 @@ function reconcileSidePanelLayouts(
   return changed ? next : null;
 }
 
-export function useTerminalSidePanelLayoutState() {
+const DEFAULT_LAYOUT_RESIZE_DEBOUNCE_MS = 300;
+
+export type TerminalSidePanelLayoutStateOptions = {
+  /**
+   * Write-through for the device-default workspace layout. Called with the
+   * committed layout after user-driven changes (tool select, split, focus,
+   * pane close, split resize) or null when the user closed the whole panel.
+   * Programmatic paths (preset application, auto-open reconciliation, tab
+   * cleanup) never invoke it, so transient layouts cannot drift the default.
+   */
+  onDefaultLayoutChange?: (layout: SidePanelLayout | null) => void;
+};
+
+export function useTerminalSidePanelLayoutState(
+  options: TerminalSidePanelLayoutStateOptions = {},
+) {
+  const onDefaultLayoutChangeRef = useRef(options.onDefaultLayoutChange);
+  onDefaultLayoutChangeRef.current = options.onDefaultLayoutChange;
+  const pendingDefaultLayoutRef = useRef<{ layout: SidePanelLayout } | null>(null);
+  const defaultLayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPendingDefaultLayout = useCallback(() => {
+    if (defaultLayoutTimerRef.current !== null) {
+      clearTimeout(defaultLayoutTimerRef.current);
+      defaultLayoutTimerRef.current = null;
+    }
+    const pending = pendingDefaultLayoutRef.current;
+    pendingDefaultLayoutRef.current = null;
+    if (pending) onDefaultLayoutChangeRef.current?.(pending.layout);
+  }, []);
+
+  // Flush a pending debounced resize write when the layer unmounts so the
+  // last drag position is not lost to a quick app close.
+  useEffect(() => flushPendingDefaultLayout, [flushPendingDefaultLayout]);
+
+  const persistDefaultLayout = useCallback((layout: SidePanelLayout | null, debounce = false) => {
+    if (!onDefaultLayoutChangeRef.current) return;
+    // An immediate (structural) write always supersedes a scheduled resize
+    // write: the committed layout already contains the pending sizes.
+    if (defaultLayoutTimerRef.current !== null) {
+      clearTimeout(defaultLayoutTimerRef.current);
+      defaultLayoutTimerRef.current = null;
+    }
+    pendingDefaultLayoutRef.current = null;
+    if (!debounce) {
+      onDefaultLayoutChangeRef.current(layout);
+      return;
+    }
+    pendingDefaultLayoutRef.current = { layout };
+    defaultLayoutTimerRef.current = setTimeout(() => {
+      defaultLayoutTimerRef.current = null;
+      const pending = pendingDefaultLayoutRef.current;
+      pendingDefaultLayoutRef.current = null;
+      if (pending) onDefaultLayoutChangeRef.current?.(pending.layout);
+    }, DEFAULT_LAYOUT_RESIZE_DEBOUNCE_MS);
+  }, []);
   const [sidePanelOpenTabs, setSidePanelOpenTabs] = useState<Map<string, SidePanelTool>>(new Map());
   const [sidePanelLayouts, setSidePanelLayouts] = useState<Map<string, SidePanelLayout>>(new Map());
   const sidePanelOpenTabsRef = useRef(sidePanelOpenTabs);
@@ -204,7 +259,10 @@ export function useTerminalSidePanelLayoutState() {
       );
       return next;
     });
-  }, []);
+    // User-driven commit: write the layout through as the device default
+    // (openTab === null means the user closed the whole panel).
+    persistDefaultLayout(openTab === null ? null : layout);
+  }, [persistDefaultLayout]);
 
   const commitLayout = useCallback((tabId: string, layout: SidePanelLayout) => {
     commitMap(tabId, layout, getFocusedSidePanelPane(layout).tool);
@@ -274,7 +332,10 @@ export function useTerminalSidePanelLayoutState() {
       sidePanelLayoutsRef.current = next;
       return next;
     });
-  }, []);
+    // Drag fires per frame: coalesce the default-layout write behind a
+    // trailing debounce instead of hitting storage on every update.
+    persistDefaultLayout(nextLayout, true);
+  }, [persistDefaultLayout]);
 
   return {
     sidePanelOpenTabs,

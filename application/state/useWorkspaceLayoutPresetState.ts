@@ -2,8 +2,8 @@ import { useCallback } from 'react';
 
 import {
   getFocusedSidePanelPane,
+  sidePanelToolAvailableForProtocol,
   type SidePanelLayout,
-  type SidePanelTool,
 } from '../../domain/sidePanelLayout';
 import {
   createWorkspaceLayoutPreset,
@@ -11,14 +11,10 @@ import {
   withoutUnavailableSidePanelTools,
 } from '../../domain/workspaceLayoutPreset';
 import {
+  clearWorkspaceLayoutPreset as clearStoredWorkspaceLayoutPreset,
   readWorkspaceLayoutPreset,
   writeWorkspaceLayoutPreset,
 } from './workspaceLayoutPresetStore';
-
-/** Protocols whose sessions can actually serve an SFTP pane. */
-function canServeSftp(protocol: string): boolean {
-  return protocol === 'local' || protocol === 'ssh' || protocol === 'mosh';
-}
 
 export type ResolvedWorkspaceLayoutPreset = {
   layout: SidePanelLayout;
@@ -48,7 +44,7 @@ export function useWorkspaceLayoutPresetState() {
       const proto = session.protocol ?? 'ssh';
       const usable = withoutUnavailableSidePanelTools(
         preset.layout,
-        (tool) => (tool !== 'sftp' && tool !== 'browser') || canServeSftp(proto),
+        (tool) => sidePanelToolAvailableForProtocol(tool, proto),
       );
       if (!usable) return null;
 
@@ -65,5 +61,10 @@ export function useWorkspaceLayoutPresetState() {
     return writeWorkspaceLayoutPreset(preset);
   }, []);
 
-  return { resolveDefaultLayoutForSession, saveWorkspaceLayoutAsDefault };
+  /** Drop the saved default so newly connected sessions start without it. */
+  const clearWorkspaceLayoutPreset = useCallback(() => {
+    clearStoredWorkspaceLayoutPreset();
+  }, []);
+
+  return { resolveDefaultLayoutForSession, saveWorkspaceLayoutAsDefault, clearWorkspaceLayoutPreset };
 }

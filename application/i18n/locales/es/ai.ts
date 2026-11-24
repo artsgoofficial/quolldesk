@@ -746,8 +746,6 @@ export const esAiMessages: Messages = {
   'terminal.layer.splitHorizontal': 'Dividir arriba y abajo',
   'terminal.layer.splitVertical': 'Dividir izquierda y derecha',
   'terminal.layer.openInNewSplit': 'Abrir en una división nueva',
-  'terminal.layer.saveLayoutAsDefault': 'Guardar diseño como predeterminado',
-  'terminal.layer.layoutSavedAsDefault': 'Diseño guardado como predeterminado',
   'terminal.layer.layoutSaveFailed': 'No se pudo guardar el diseño',
   'terminal.layer.hostTree.search': 'Buscar hosts...',
   'terminal.layer.hostTree.searchButton': 'Buscar',

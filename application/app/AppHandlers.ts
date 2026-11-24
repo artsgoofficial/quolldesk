@@ -4,6 +4,7 @@ import type { Host, HostProtocol, TerminalSession } from '../../types';
 import type { PassphraseRequest } from '../../components/PassphraseModal';
 import type { TerminalPopupPayload } from '../../domain/systemManager/types';
 import { getEffectiveHostDistro, classifyDistroId, hostRestrictsExtraSshChannels, shouldProbeSessionCwd } from '../../domain/host';
+import { findExistingDbSession } from '../../domain/hostOpenSession';
 import { isDbProtocol } from '../../domain/models/database';
 import { resolveHostDefaultLocalShell } from '../../domain/localShellHost';
 import { getAvailablePaneMagnificationController } from '../../domain/paneMagnification';
@@ -171,7 +172,7 @@ export function handleTrayTogglePortForwardImpl(getCtx: AppContextGetter, ruleId
 }
 
 export function handleTrayPanelConnectImpl(getCtx: AppContextGetter, hostId: string) {
-  const { addConnectionLog, connectToHost, hosts, identities, keys, resolveEffectiveHost, resolveHostAuth, systemInfoRef, t, toast } = getCtx();
+  const { addConnectionLog, connectToHost, hosts, identities, keys, resolveEffectiveHost, resolveHostAuth, sessions, systemInfoRef, t, toast } = getCtx();
   {
     const host = hosts.find((item) => item.id === hostId);
     if (!host) {
@@ -203,7 +204,13 @@ export function handleTrayPanelConnectImpl(getCtx: AppContextGetter, hostId: str
 
     const protocol = resolveEffectiveTerminalProtocol(effectiveHost);
     const resolvedAuth = resolveHostAuth({ host: effectiveHost, keys, identities });
+    // Same one-workbench-per-host rule as handleConnectToHostImpl: a reused
+    // database tab is focused/redialled by connectToHost, not newly connected.
+    const reusedDbSession = isDbProtocol(effectiveHost.protocol)
+      ? findExistingDbSession(sessions ?? [], host.id)
+      : undefined;
     const sessionId = connectToHost(effectiveHost);
+    if (reusedDbSession) return sessionId;
     addConnectionLog({
       sessionId,
       hostId: host.id,
@@ -1171,7 +1178,7 @@ export function handleCreateLocalTerminalImpl(
 }
 
 export function handleConnectToHostImpl(getCtx: AppContextGetter, host: Host, hidden = false) {
-  const { addConnectionLog, connectToHost, discoveredShells, identities, keys, resolveEffectiveHost, resolveHostAuth, resolveShellSetting, systemInfoRef, terminalSettings } = getCtx();
+  const { addConnectionLog, connectToHost, discoveredShells, identities, keys, resolveEffectiveHost, resolveHostAuth, resolveShellSetting, sessions, systemInfoRef, terminalSettings } = getCtx();
 {
     const { username, hostname: localHost } = systemInfoRef.current;
 
@@ -1204,8 +1211,14 @@ export function handleConnectToHostImpl(getCtx: AppContextGetter, host: Host, hi
 
     const protocol = resolveEffectiveTerminalProtocol(effectiveHost);
     const resolvedAuth = resolveHostAuth({ host: effectiveHost, keys, identities });
+    // A reused database tab (see connectToHost's one-workbench-per-host rule)
+    // is focused/redialled, not newly connected — no connection-log row.
+    const reusedDbSession = !hidden && isDbProtocol(effectiveHost.protocol)
+      ? findExistingDbSession(sessions ?? [], host.id)
+      : undefined;
     const sessionId = connectToHost(effectiveHost, { hidden });
     if (!sessionId) return null;
+    if (reusedDbSession) return sessionId;
     addConnectionLog({
       sessionId,
       hostId: host.id,

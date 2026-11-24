@@ -37,6 +37,10 @@ export interface SqlEngineDescriptor {
     indexNulls: boolean;
     /** Server session manager (pg_stat_activity / processlist / dm_exec_sessions). */
     sessions: boolean;
+    /** Lock/wait view (pg_locks / innodb_lock_waits / dm_tran_locks). */
+    locks: boolean;
+    /** User/role management list + create/drop (pg_roles / mysql.user). */
+    users: boolean;
     /** TRUNCATE TABLE context-menu action (sqlite has none). */
     truncate: boolean;
     /** The bridge honors a query-level timeoutMs clamp. */
@@ -51,6 +55,7 @@ const MYSQL_FAMILY_COLUMN_TYPES = ['tinyint(1)', 'tinyint', 'smallint', 'mediumi
 const MYSQL_FAMILY_FEATURES: SqlEngineDescriptor['features'] = {
   tls: true, tunnel: true, explain: true, designer: true, backupRestore: true,
   indexMethods: ['BTREE', 'HASH'], indexWhere: false, indexNulls: false, sessions: true, truncate: true, queryTimeout: true,
+  locks: true, users: true,
 };
 
 export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
@@ -62,7 +67,7 @@ export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
   { id: 'postgresql', label: 'PostgreSQL', defaultPort: 5432,  cap: 'Pg',      addressMode: 'hostPort', schemaQualified: true,  completionDialect: 'postgresql', monacoLanguage: 'pgsql', indexMethodStyle: 'pg',
     placeholderUsername: 'postgres',   placeholderDatabase: 'postgres',
     accent: '#336791',
-    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'], indexWhere: true, indexNulls: true, sessions: true, truncate: true, queryTimeout: false },
+    features: { tls: true, tunnel: true, explain: true, designer: true, backupRestore: true, indexMethods: ['btree', 'hash', 'gin', 'gist', 'spgist', 'brin'], indexWhere: true, indexNulls: true, sessions: true, truncate: true, queryTimeout: false, locks: true, users: true },
     columnTypes: ['smallint', 'integer', 'bigint', 'smallserial', 'serial', 'bigserial', 'numeric(10,2)', 'real', 'double precision', 'money', 'varchar(255)', 'text', 'bytea', 'date', 'time', 'timestamp', 'timestamptz', 'interval', 'boolean', 'json', 'jsonb', 'uuid', 'xml', 'inet', 'cidr', 'macaddr'] },
   { id: 'mariadb',    label: 'MariaDB',    defaultPort: 3306,  cap: 'Mariadb', addressMode: 'hostPort', schemaQualified: false, completionDialect: 'mysql',      monacoLanguage: 'sql',   indexMethodStyle: 'mysql',
     placeholderUsername: 'root',       placeholderDatabase: 'mysql',
@@ -74,12 +79,12 @@ export const SQL_ENGINES: readonly SqlEngineDescriptor[] = [
     accent: '#A93038',
     // tunnel: false (Ruling 8) — tedious dials TCP directly; there is no socket
     // to inject through an SSH tunnel, and the mssql bridge ignores opts.ssh.
-    features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'], indexWhere: true, indexNulls: false, sessions: true, truncate: true, queryTimeout: true },
+    features: { tls: true, tunnel: false, explain: false, designer: true, backupRestore: true, indexMethods: ['CLUSTERED', 'NONCLUSTERED'], indexWhere: true, indexNulls: false, sessions: true, truncate: true, queryTimeout: true, locks: true, users: false },
     columnTypes: ['tinyint', 'smallint', 'int', 'bigint', 'decimal(10,2)', 'numeric(18,0)', 'money', 'smallmoney', 'float', 'real', 'bit', 'char(36)', 'nchar(10)', 'varchar(255)', 'nvarchar(255)', 'nvarchar(max)', 'binary(16)', 'varbinary(max)', 'date', 'time', 'smalldatetime', 'datetime2', 'datetimeoffset', 'uniqueidentifier', 'xml', 'sql_variant'] },
   { id: 'sqlite',     label: 'SQLite',     defaultPort: null,  cap: 'Sqlite',  addressMode: 'file',     schemaQualified: false, completionDialect: 'generic',    monacoLanguage: 'sql',   indexMethodStyle: 'none',
     placeholderUsername: '',           placeholderDatabase: '',
     accent: '#0F7B6C',
-    features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [], indexWhere: true, indexNulls: false, sessions: false, truncate: false, queryTimeout: false },
+    features: { tls: false, tunnel: false, explain: true, designer: true, backupRestore: true, indexMethods: [], indexWhere: true, indexNulls: false, sessions: false, truncate: false, queryTimeout: false, locks: false, users: false },
     columnTypes: ['INTEGER', 'BIGINT', 'SMALLINT', 'TEXT', 'VARCHAR(255)', 'CHAR(36)', 'CLOB', 'REAL', 'DOUBLE', 'FLOAT', 'BLOB', 'NUMERIC', 'DECIMAL(10,2)', 'BOOLEAN', 'DATE', 'DATETIME', 'JSON'] },
 ];
 

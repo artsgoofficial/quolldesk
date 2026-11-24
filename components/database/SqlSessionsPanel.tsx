@@ -3,13 +3,13 @@
  * database with terminate / cancel actions. SQL dialects only (sqlite has no
  * server sessions) — gated by features.sessions in the workbench.
  */
-import { ArrowLeft, Ban, RefreshCw, Square } from 'lucide-react';
+import { Ban, Square } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import type { SqlEngineId } from '../../domain/models/dbEngines';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import type { SqlSessionInfo } from '../../types/global/quolldesk-bridge-database';
-import { Button } from '../ui/button';
+import SqlPanelHeader from './SqlPanelHeader';
 import { toast } from '../ui/toast';
 
 interface SqlSessionsPanelProps {
@@ -54,16 +54,7 @@ export const SqlSessionsPanel: React.FC<SqlSessionsPanelProps> = ({ connectionId
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="px-2 py-1.5 border-b border-border/60 flex items-center gap-1.5 shrink-0 app-no-drag">
-        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onClose} title={t('db.search.back')}>
-          <ArrowLeft size={13} />
-        </Button>
-        <span className="text-xs font-medium">{t('db.sessions.title')}</span>
-        <Button variant="ghost" size="sm" className="h-7 px-2 ml-auto" onClick={() => void refresh()} disabled={loading}
-          title={t('common.refresh')}>
-          <RefreshCw size={12} />
-        </Button>
-      </div>
+      <SqlPanelHeader titleKey="db.sessions.title" onClose={onClose} onRefresh={() => void refresh()} loading={loading} />
       <div className="flex-1 min-h-0 overflow-auto p-2 text-xs">
         {error && <p className="text-destructive px-1 py-1">{error}</p>}
         {loading && sessions.length === 0 && (

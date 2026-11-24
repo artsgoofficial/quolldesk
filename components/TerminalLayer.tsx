@@ -126,6 +126,7 @@ import {
   collectSidePanelPanes,
   isPluginSidePanelTool,
   sidePanelLayoutHasTool,
+  sidePanelToolAvailableForProtocol,
   type SidePanelLayout,
   type SidePanelSplitDirection,
 } from '../domain/sidePanelLayout';
@@ -310,6 +311,21 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   const magnifiedPaneRef = useRef(magnifiedPane);
   magnifiedPaneRef.current = magnifiedPane;
   const lastInteractedPaneRef = useRef<Map<string, PaneMagnificationTarget>>(new Map());
+  // Destructure the stable preset hook callbacks before the side panel state:
+  // the write-through below persists every user-driven layout change live, so
+  // the saved default always mirrors what is on screen (closing the panel
+  // clears it). See useTerminalSidePanelLayoutState for the gesture boundary.
+  const { resolveDefaultLayoutForSession, saveWorkspaceLayoutAsDefault: persistWorkspaceLayoutAsDefault, clearWorkspaceLayoutPreset } =
+    useWorkspaceLayoutPresetState();
+  const handleDefaultLayoutWriteThrough = useCallback((layout: SidePanelLayout | null) => {
+    if (layout === null) {
+      clearWorkspaceLayoutPreset();
+      return;
+    }
+    if (!persistWorkspaceLayoutAsDefault(layout)) {
+      toast.error(t('terminal.layer.layoutSaveFailed'));
+    }
+  }, [clearWorkspaceLayoutPreset, persistWorkspaceLayoutAsDefault, t]);
   // Side panel state must be initialized before any callbacks reference its
   // setters or refs in their dependency arrays.
   const {
@@ -324,7 +340,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     closePane: closeSidePanelPaneForTab,
     resizeSplit: resizeSidePanelSplitForTab,
     selectSidePanelToolForTab,
-  } = useTerminalSidePanelLayoutState();
+  } = useTerminalSidePanelLayoutState({ onDefaultLayoutChange: handleDefaultLayoutWriteThrough });
   useEffect(() => {
     pruneComposeBarHistory(sessions.map((session) => session.id));
   }, [sessions]);
@@ -475,13 +491,6 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   const sftpFollowTerminalCwdRef = useRef(sftpFollowTerminalCwd);
   sftpFollowTerminalCwdRef.current = sftpFollowTerminalCwd;
 
-  // Destructure the stable hook callbacks: the hook returns a fresh object
-  // each render, and depending on that object would recreate the preset
-  // callbacks (and in turn handleStatusChange) on unrelated state updates,
-  // defeating the terminal pane memoization.
-  const { resolveDefaultLayoutForSession, saveWorkspaceLayoutAsDefault: persistWorkspaceLayoutAsDefault } =
-    useWorkspaceLayoutPresetState();
-
   const applyWorkspaceLayoutPresetForSession = useCallback((session: TerminalSession, tabId: string, sftpHostOverride?: Host) => {
     // Preset persistence and resolution live in the application layer; the
     // component only mounts the resolved panes into its UI state.
@@ -556,15 +565,6 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     });
     return true;
   }, [resolveDefaultLayoutForSession, setSidePanelLayouts, setSidePanelOpenTabs]);
-
-  const handleSaveWorkspaceLayoutAsDefault = useCallback((layout: SidePanelLayout): boolean => {
-    if (!persistWorkspaceLayoutAsDefault(layout)) {
-      toast.error(t('terminal.layer.layoutSaveFailed'));
-      return false;
-    }
-    toast.success(t('terminal.layer.layoutSavedAsDefault'));
-    return true;
-  }, [persistWorkspaceLayoutAsDefault, t]);
 
   const handleStatusChange = useCallback((sessionId: string, status: TerminalSession['status'], sftpHostOverride?: Host) => {
     onUpdateSessionStatus(sessionId, status);
@@ -1001,6 +1001,11 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   ]);
 
   const closeTerminalSidePanelTab = useCallback((tabId: string) => {
+    // User-driven whole-panel close (X button, ⌘\, SFTP toggle): in the
+    // write-through model this means "no default layout" for future sessions.
+    // Session-tab cleanup never routes through here, so it cannot wipe the
+    // default as a side effect.
+    clearWorkspaceLayoutPreset();
     setSidePanelOpenTabs((previous) => {
       const next = new Map(previous);
       next.delete(tabId);
@@ -1034,6 +1039,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     notesReturnTabRef.current.delete(tabId);
   }, [
     clearSftpPanelState,
+    clearWorkspaceLayoutPreset,
     resolveTabActiveExternalEditCount,
     resolveTabActiveTransfersCount,
     setSidePanelOpenTabs,
@@ -1747,9 +1753,27 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
 
   // Switch only the focused pane. If the tool is already open elsewhere in
   // the tree, the domain helper focuses that pane instead of duplicating it.
+  // Protocol of the session behind a tab (workspace tabs resolve to their
+  // focused member, falling back to the first member). Database workbench
+  // tabs must not open terminal-bound side panel panes through any entry
+  // point — toolbar tabs, split menus, shortcuts or auto-open.
+  const resolveTabSidePanelProtocol = useCallback((tabId: string): string | null => {
+    const workspace = workspacesRef.current.find((ws) => ws.id === tabId);
+    if (workspace) {
+      const focused = workspace.focusedSessionId
+        ? sessionsRef.current.find((session) => session.id === workspace.focusedSessionId)
+        : undefined;
+      return focused?.protocol
+        ?? sessionsRef.current.find((session) => session.workspaceId === tabId)?.protocol
+        ?? null;
+    }
+    return sessionsRef.current.find((session) => session.id === tabId && !session.workspaceId)?.protocol ?? null;
+  }, []);
+
   const handleSwitchSidePanelTab = useCallback((tab: SidePanelTab) => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
+    if (!sidePanelToolAvailableForProtocol(tab, resolveTabSidePanelProtocol(tabId))) return;
     const currentPanel = sidePanelOpenTabsRef.current.get(tabId);
 
     // If already on this tab, do nothing — user must click X to close
@@ -1759,7 +1783,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     startTransition(() => {
       selectSidePanelToolForTab(tabId, tab);
     });
-  }, [prepareSidePanelTool, selectSidePanelToolForTab, sidePanelOpenTabsRef]);
+  }, [prepareSidePanelTool, resolveTabSidePanelProtocol, selectSidePanelToolForTab, sidePanelOpenTabsRef]);
 
   const handleFocusSidePanelPane = useCallback((paneId: string) => {
     const tabId = activeTabIdRef.current;
@@ -1891,6 +1915,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   ) => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
+    if (!sidePanelToolAvailableForProtocol(tool, resolveTabSidePanelProtocol(tabId))) return;
     if (!sidePanelLayoutsRef.current.has(tabId) || !prepareSidePanelTool(tabId, tool)) return;
     splitSidePanelPaneForTab(
       tabId,
@@ -1899,7 +1924,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
       { paneId: crypto.randomUUID(), splitId: crypto.randomUUID() },
       availableAxisLength,
     );
-  }, [prepareSidePanelTool, sidePanelLayoutsRef, splitSidePanelPaneForTab]);
+  }, [prepareSidePanelTool, resolveTabSidePanelProtocol, sidePanelLayoutsRef, splitSidePanelPaneForTab]);
 
   const handleCloseSidePanelPane = useCallback((paneId: string) => {
     const tabId = activeTabIdRef.current;
@@ -1970,6 +1995,10 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
       return;
     }
 
+    // Database workbench tabs have no shell: the scripts shortcut must not
+    // force a scripts pane open there.
+    if (!sidePanelToolAvailableForProtocol('scripts', resolveTabSidePanelProtocol(tabId))) return;
+
     markSidePanelSubTabOpened(tabId, 'scripts');
     startTransition(() => {
       setSidePanelOpenTabs(prev => {
@@ -1978,27 +2007,36 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
         return next;
       });
     });
-  }, [handleCloseSidePanel, markSidePanelSubTabOpened, setSidePanelOpenTabs, sidePanelOpenTabsRef]);
+  }, [handleCloseSidePanel, markSidePanelSubTabOpened, resolveTabSidePanelProtocol, setSidePanelOpenTabs, sidePanelOpenTabsRef]);
 
   // Toggle the whole side panel (new ⌘/Ctrl+\ shortcut). Close if open; if
   // closed, reopen the tab's last sub-panel, defaulting to SFTP (when a host is
-  // available) or scripts.
+  // available), then scripts — database workbench tabs fall through to AI.
   const handleToggleSidePanel = useCallback(() => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
     const isOpen = sidePanelOpenTabsRef.current.has(tabId);
-    const sftpAvailable = !!resolveSftpHostForTab(tabId);
-    const fallbackTab: SidePanelTab = sftpAvailable ? 'sftp' : 'scripts';
-    const lastTab = lastSidePanelTabRef.current.get(tabId) ?? null;
+    const protocol = resolveTabSidePanelProtocol(tabId);
+    const sftpAvailable = !!resolveSftpHostForTab(tabId) && sidePanelToolAvailableForProtocol('sftp', protocol);
+    const scriptsAvailable = sidePanelToolAvailableForProtocol('scripts', protocol);
+    const fallbackTab: SidePanelTab = sftpAvailable ? 'sftp' : scriptsAvailable ? 'scripts' : 'ai';
+    const rememberedTab = lastSidePanelTabRef.current.get(tabId) ?? null;
+    // A remembered pane the current tab cannot serve (protocol switch, lost
+    // host) falls back instead of silently doing nothing.
+    const lastTab = rememberedTab && sidePanelToolAvailableForProtocol(rememberedTab, protocol)
+      ? rememberedTab
+      : fallbackTab;
     const intent = resolveSidePanelToggleIntent<SidePanelTab>({ isOpen, lastTab, fallbackTab });
     if (intent.kind === 'close') {
       handleCloseSidePanel();
       return;
     }
     // If the remembered panel is SFTP but no host is resolvable, use scripts.
-    const target: SidePanelTab = intent.tab === 'sftp' && !sftpAvailable ? 'scripts' : intent.tab;
+    const target: SidePanelTab = intent.tab === 'sftp' && !sftpAvailable
+      ? fallbackTab
+      : intent.tab;
     handleSwitchSidePanelTab(target);
-  }, [handleCloseSidePanel, handleSwitchSidePanelTab, resolveSftpHostForTab, sidePanelOpenTabsRef]);
+  }, [handleCloseSidePanel, handleSwitchSidePanelTab, resolveSftpHostForTab, resolveTabSidePanelProtocol, sidePanelOpenTabsRef]);
 
   // Open theme side panel (called from Terminal toolbar)
   const handleOpenTheme = useCallback(() => {
@@ -2791,7 +2829,6 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     setSftpHostForTab,
     setSftpHostSourceSessionForTab,
     setSftpInitialLocationForTab,
-    onSaveWorkspaceLayoutAsDefault: handleSaveWorkspaceLayoutAsDefault,
     setSftpPendingUploadsForTab,
     showHostTreeSidebar,
     sidePanelOpenTabs,

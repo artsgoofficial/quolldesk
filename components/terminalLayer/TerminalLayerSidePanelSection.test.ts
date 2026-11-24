@@ -284,7 +284,7 @@ test('split icons depict the same pane arrangement as their actions', () => {
 
 test('side panel layout state is initialized before callbacks read it', () => {
   const layerSource = readFileSync(new URL('../TerminalLayer.tsx', import.meta.url), 'utf8');
-  const layoutStateIndex = layerSource.indexOf('} = useTerminalSidePanelLayoutState();');
+  const layoutStateIndex = layerSource.indexOf('} = useTerminalSidePanelLayoutState(');
   const statusCallbackIndex = layerSource.indexOf('const handleStatusChange = useCallback');
 
   assert.notEqual(layoutStateIndex, -1);
@@ -373,4 +373,35 @@ test('side panel close button stays visible at every panel width', () => {
   assert.match(closeSlice, /onClick=\{handleCloseSidePanel\}/);
   assert.match(closeSlice, /className="h-7 w-7 shrink-0 rounded-md p-0 hover:bg-transparent"/);
   assert.doesNotMatch(closeSlice, /\bhidden\b|max-(sm|md|lg|xl):/);
+});
+
+test('database workbench tabs never see terminal-bound side panel tools', () => {
+  const sectionSource = readFileSync(new URL('./TerminalLayerSidePanelSection.tsx', import.meta.url), 'utf8');
+  const layerSource = readFileSync(new URL('../TerminalLayer.tsx', import.meta.url), 'utf8');
+
+  // The section resolves the active tab's session protocol…
+  assert.match(sectionSource, /activeSidePanelSessionProtocol = useMemo/);
+  assert.match(sectionSource, /session\.workspaceId === activeTabId/);
+  // …and filters both the availability list (toolbar chips, customize menu,
+  // drag reorder) and the item list (split menus, overflow, labels) with the
+  // shared domain predicate.
+  const availabilityFilter = /\.filter\(\(tabId\) => sidePanelToolAvailableForProtocol\(tabId, activeSidePanelSessionProtocol\)\)/;
+  assert.match(sectionSource, availabilityFilter);
+  const itemFilter = /sidePanelTabItems\.filter\(\(item\) => sidePanelToolAvailableForProtocol\(item\.id, activeSidePanelSessionProtocol\)\)/;
+  assert.match(sectionSource, itemFilter);
+  assert.doesNotMatch(sectionSource, /items=\{sidePanelTabItems\}/);
+  assert.match(sectionSource, /items=\{protocolAvailableSidePanelItems\}/);
+
+  // Programmatic entry points in TerminalLayer consult the same predicate.
+  const guardCount = layerSource.match(/sidePanelToolAvailableForProtocol\(/g)?.length ?? 0;
+  assert.ok(guardCount >= 4, `expected availability guards in TerminalLayer, found ${guardCount}`);
+  assert.match(layerSource, /const resolveTabSidePanelProtocol = useCallback/);
+  assert.match(layerSource, /sidePanelToolAvailableForProtocol\('scripts', resolveTabSidePanelProtocol\(tabId\)\)/);
+});
+
+test('domain availability predicate exists with the documented shape', () => {
+  const domainSource = readFileSync(new URL('../../domain/sidePanelLayout.ts', import.meta.url), 'utf8');
+  assert.match(domainSource, /TERMINAL_BOUND_SIDE_PANEL_TOOLS: ReadonlySet<BuiltinSidePanelTool> = new Set\(\[\s*'scripts',\s*'history',\s*'system',\s*\]\)/s);
+  assert.match(domainSource, /FILE_BOUND_SIDE_PANEL_TOOLS: ReadonlySet<BuiltinSidePanelTool> = new Set\(\[\s*'sftp',\s*'browser',\s*\]\)/s);
+  assert.match(domainSource, /export function sidePanelToolAvailableForProtocol/);
 });

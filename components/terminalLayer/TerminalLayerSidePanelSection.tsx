@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Activity, FolderTree, Globe2, History, Maximize2, MessageSquare, Minimize2, NotebookText, Palette, PanelsTopLeft, Play, Save, SplitSquareHorizontal, SplitSquareVertical, X } from 'lucide-react';
+import { Activity, FolderTree, Globe2, History, Maximize2, MessageSquare, Minimize2, NotebookText, Palette, PanelsTopLeft, Play, SplitSquareHorizontal, SplitSquareVertical, X } from 'lucide-react';
 import {
   buildSidePanelChromeThemeFromTerminalTheme,
   buildTerminalSidePanelCssVars,
@@ -51,6 +51,7 @@ import {
   getFocusedSidePanelPane,
   getSidePanelNodeMinimumPixels,
   getSidePanelSplitResizeBounds,
+  sidePanelToolAvailableForProtocol,
   SIDE_PANEL_SPLIT_DIVIDER_PIXELS,
   SIDE_PANEL_DOCK_POSITIONS,
   type SidePanelDockPosition,
@@ -633,6 +634,16 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   const isSidePanelOpenForCurrentTab = activeTabId ? sidePanelOpenTabs.has(activeTabId) : false;
   const activeSidePanelTab = activeTabId ? sidePanelOpenTabs.get(activeTabId) ?? null : null;
   const activeSidePanelLayout = activeTabId ? sidePanelLayouts.get(activeTabId) ?? null : null;
+  // Protocol of the session behind the active tab (workspace tabs resolve to
+  // their first member). Database workbench tabs must not offer the
+  // terminal-bound panes (SFTP/browser/scripts/history/system).
+  const activeSidePanelSessionProtocol = useMemo(() => {
+    const sessions = ctx.sessions;
+    if (!Array.isArray(sessions) || !activeTabId) return null;
+    const member = sessions.find((session: { workspaceId?: string | null }) => session.workspaceId === activeTabId)
+      ?? sessions.find((session: { id: string; workspaceId?: string | null }) => session.id === activeTabId && !session.workspaceId);
+    return (member?.protocol as string | undefined) ?? null;
+  }, [activeTabId, ctx.sessions]);
 
   const {
     Button: Btn,
@@ -823,7 +834,10 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   } = useTerminalSidePanelTabOrder(pluginSidebar.pages.map((page) => page.tool));
   const availableSidePanelTabs = useMemo(() => [
     ...TERMINAL_SIDE_PANEL_TAB_DEFAULT_ORDER, ...pluginSidebar.pages.map((page) => page.tool),
-  ], [pluginSidebar.pages]);
+  ].filter((tabId) => sidePanelToolAvailableForProtocol(tabId, activeSidePanelSessionProtocol)), [
+    activeSidePanelSessionProtocol,
+    pluginSidebar.pages,
+  ]);
   const availableSidePanelTabSet = useMemo(() => new Set<SidePanelTab>(availableSidePanelTabs), [availableSidePanelTabs]);
   const resolvedSidePanelTerminalTheme = useMemo(() => (
     followAppTerminalTheme
@@ -1079,13 +1093,19 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
     handleSwitchSidePanelTab,
     pluginSidebar.pages,
   ]);
+  // Toolbar chips, split menus and the overflow menu all derive from this
+  // list: database workbench tabs never see the terminal-bound entries.
+  const protocolAvailableSidePanelItems = useMemo(
+    () => sidePanelTabItems.filter((item) => sidePanelToolAvailableForProtocol(item.id, activeSidePanelSessionProtocol)),
+    [activeSidePanelSessionProtocol, sidePanelTabItems],
+  );
   const sidePanelTabItemById = useMemo(
-    () => new Map(sidePanelTabItems.map((item) => [item.id, item])),
-    [sidePanelTabItems],
+    () => new Map(protocolAvailableSidePanelItems.map((item) => [item.id, item])),
+    [protocolAvailableSidePanelItems],
   );
   const sidePanelToolLabels = useMemo(
-    () => new Map(sidePanelTabItems.map((item) => [item.id, item.label])),
-    [sidePanelTabItems],
+    () => new Map(protocolAvailableSidePanelItems.map((item) => [item.id, item.label])),
+    [protocolAvailableSidePanelItems],
   );
   const occupiedSidePanelTools = useMemo(
     () => new Set(activeSidePanelLayout
@@ -1422,7 +1442,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
               )}
               <SidePanelSplitMenu
                 direction="horizontal"
-                items={sidePanelTabItems}
+                items={protocolAvailableSidePanelItems}
                 occupiedTools={occupiedSidePanelTools}
                 disabled={
                   !activeSidePanelLayout
@@ -1435,7 +1455,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
               />
               <SidePanelSplitMenu
                 direction="vertical"
-                items={sidePanelTabItems}
+                items={protocolAvailableSidePanelItems}
                 occupiedTools={occupiedSidePanelTools}
                 disabled={
                   !activeSidePanelLayout
@@ -1446,28 +1466,6 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
                 t={t}
                 buttonColor={sidePanelTheme.mutedFg}
               />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Btn
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 rounded-md p-0 hover:bg-transparent"
-                    style={{ color: sidePanelTheme.mutedFg }}
-                    disabled={!activeSidePanelLayout || !ctx.onSaveWorkspaceLayoutAsDefault}
-                    aria-label={t('terminal.layer.saveLayoutAsDefault')}
-                    onClick={() => {
-                      if (activeSidePanelLayout) {
-                        ctx.onSaveWorkspaceLayoutAsDefault?.(activeSidePanelLayout);
-                      }
-                    }}
-                  >
-                    <Save size={15} />
-                  </Btn>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {t('terminal.layer.saveLayoutAsDefault')}
-                </TooltipContent>
-              </Tooltip>
               <SidePanelDockSelect
                 position={sidePanelPosition}
                 onSelect={setSidePanelPosition}

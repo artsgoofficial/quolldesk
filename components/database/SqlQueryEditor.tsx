@@ -25,9 +25,11 @@ import { SQL_ENGINES, SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/mo
 import { emitAiPrompt, requestAiPanelOpen, subscribeSqlEditorAction } from '../../application/state/sqlEditorBridge';
 import { Button } from '../ui/button';
 import { Dropdown, DropdownContent, DropdownTrigger } from '../ui/dropdown';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { toast } from '../ui/toast';
 import { downloadCsv, downloadInserts, downloadJson } from './csv';
 import { formatSql } from './sqlFormat';
+import { extractBindVariables, substituteBindVariables } from './bindVariables';
 import { splitSqlStatements } from './splitSqlStatements';
 
 interface SqlQueryEditorProps {
@@ -165,10 +167,19 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
     setTabs((prev) => prev.map((tab) => (tab.id === activeTabId ? { ...tab, sql: next } : tab)));
   }, [activeTabId]);
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (sqlOverride?: string) => {
     const tabId = activeTabId;
-    const sql = tabs.find((tab) => tab.id === tabId)?.sql ?? '';
+    let sql = sqlOverride ?? tabs.find((tab) => tab.id === tabId)?.sql ?? '';
     if (runningTabId != null || !sql.trim()) return;
+    // Bind-variable interception: only prompts for editor-typed tokens (an
+    // override already went through the substitution pass).
+    if (!sqlOverride) {
+      const vars = extractBindVariables(sql);
+      if (vars.length > 0) {
+        setBindPrompt({ vars, sql });
+        return;
+      }
+    }
     // Statements run one by one so each SQL gets its own result tab; stop at
     // the first error, keeping earlier statements' results visible.
     const statements = splitSqlStatements(sql, dialect);
@@ -282,6 +293,11 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
   }, [connectionId, dialect, completionDialect, client]);
 
   const [explainByTab, setExplainByTab] = useState<Record<string, ExplainState>>({});
+  // Bind variables (DBeaver ${name}): when the script contains tokens, run()
+  // parks here pending user input; the dialog substitutes and re-invokes run.
+  const [bindPrompt, setBindPrompt] = useState<{ vars: string[]; sql: string } | null>(null);
+  const [bindValues, setBindValues] = useState<Record<string, string>>({});
+  const closeBindPrompt = useCallback(() => { setBindPrompt(null); setBindValues({}); }, []);
   const activeExplain = explainByTab[activeTab.id];
 
   // EXPLAIN support is an engine feature (registry): mssql has no EXPLAIN
@@ -606,6 +622,39 @@ const SqlQueryEditor: React.FC<SqlQueryEditorProps> = ({ connectionId, sessionId
           </Button>
         </div>
       </div>
+      {bindPrompt && (
+        <Dialog open onOpenChange={(open) => { if (!open) closeBindPrompt(); }}>
+          <DialogContent className="max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>{t('db.query.bindTitle')}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-2 text-xs">
+              {bindPrompt.vars.map((name, i) => (
+                <div key={name} className="flex items-center gap-2">
+                  <span className="w-28 shrink-0 font-mono text-muted-foreground truncate">${'{'}{name}{'}'}</span>
+                  <input
+                    autoFocus={i === 0}
+                    className="w-full min-w-0 h-6 px-1 bg-background border border-border rounded font-mono"
+                    autoComplete="off" spellCheck={false}
+                    value={bindValues[name] ?? ''}
+                    onChange={(e) => setBindValues((prev) => ({ ...prev, [name]: e.target.value }))}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => {
+                const substituted = substituteBindVariables(bindPrompt.sql, bindValues);
+                closeBindPrompt();
+                void runRef.current(substituted);
+              }}>
+                {t('db.query.bindRun')}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={closeBindPrompt}>{t('common.cancel')}</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
       {activeExplain && (
         <div className="border-b border-border/60 flex flex-col max-h-56">
           <div className="px-3 py-1 flex items-center gap-1 shrink-0">

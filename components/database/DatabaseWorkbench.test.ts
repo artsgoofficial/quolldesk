@@ -104,9 +104,10 @@ test('sessions/erd open only via the top tabs — toolbar duplicates are gone', 
   assert.ok(!source.includes('features.sessions && ('), 'the toolbar-only dialect guard goes with the buttons');
   // The panels stay reachable through the top-tab switcher.
   assert.match(source, /'workbench', 'backup', 'sessions', 'erd'/);
-  // The sessions tab itself is registry-gated (sqlite features.sessions is
-  // false and its bridge has no session handlers — the tab must not render).
-  assert.match(source, /view !== 'sessions' \|\| engineFeatures\.sessions/);
+  // Feature tabs (sessions/locks/users) are registry-gated (sqlite
+  // features.sessions is false and its bridge has no session handlers — the
+  // tab must not render).
+  assert.match(source, /SQL_VIEW_FEATURES\[view\]/);
 });
 
 // ——— db selector follows the server's databases config ——————————————————

@@ -23,6 +23,8 @@ import SqlSessionsPanel from './SqlSessionsPanel';
 import SqlErdPanel from './SqlErdPanel';
 import SqlTransferPanel from './SqlTransferPanel';
 import SqlOverviewPanel from './SqlOverviewPanel';
+import SqlLocksPanel from './SqlLocksPanel';
+import SqlUsersPanel from './SqlUsersPanel';
 import RedisOpsPanel from './RedisOpsPanel';
 import { generateSql } from './sqlGenerate';
 import SqlTableStructure from './SqlTableStructure';
@@ -58,9 +60,9 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 /** SQL workbench top tabs (sessions gated per-engine by features.sessions). */
-type SqlView = 'overview' | 'workbench' | 'backup' | 'sessions' | 'erd';
+type SqlView = 'overview' | 'workbench' | 'backup' | 'sessions' | 'erd' | 'locks' | 'users';
 
-const SQL_VIEWS: readonly SqlView[] = ['overview', 'workbench', 'backup', 'sessions', 'erd'];
+const SQL_VIEWS: readonly SqlView[] = ['overview', 'workbench', 'backup', 'sessions', 'erd', 'locks', 'users'];
 
 const SQL_VIEW_LABELS: Record<SqlView, string> = {
   overview: 'db.overview.title',
@@ -68,6 +70,15 @@ const SQL_VIEW_LABELS: Record<SqlView, string> = {
   backup: 'db.backup.title',
   sessions: 'db.sessions.title',
   erd: 'db.erd.title',
+  locks: 'db.locks.title',
+  users: 'db.users.title',
+};
+
+/** Views hidden (not rendered dead) when the engine registry lacks the capability. */
+const SQL_VIEW_FEATURES: Partial<Record<SqlView, 'sessions' | 'locks' | 'users'>> = {
+  sessions: 'sessions',
+  locks: 'locks',
+  users: 'users',
 };
 
 // Dropdown rendering stays bounded even for exotic `databases` configs —
@@ -413,7 +424,7 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
           (view) => t(`db.workbench.view.${view}`),
         )}
         {!isRedis && status === 'connected' && viewSwitcher(
-          SQL_VIEWS.filter((view) => view !== 'sessions' || engineFeatures.sessions),
+          SQL_VIEWS.filter((view) => { const feature = SQL_VIEW_FEATURES[view]; return !feature || engineFeatures[feature]; }),
           sqlView, (view) => setSqlView(view as SqlView),
           (view) => t(SQL_VIEW_LABELS[view as SqlView]),
         )}
@@ -458,6 +469,12 @@ const DatabaseWorkbench: React.FC<DatabaseWorkbenchProps> = ({ session, host, ho
           <RedisPubSub connectionId={connectionId} />
         ) : isRedis && redisView === 'console' ? (
           <RedisConsole connectionId={connectionId} />
+        ) : !isRedis && sqlView === 'users' ? (
+          // User management v1: full-area view (pg/mysql).
+          <SqlUsersPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
+        ) : !isRedis && sqlView === 'locks' ? (
+          // Lock management: full-area view (pg/mysql/mssql).
+          <SqlLocksPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />
         ) : !isRedis && sqlView === 'sessions' ? (
           // Session manager: full-area view (roomy table + terminate actions).
           <SqlSessionsPanel connectionId={connectionId} dialect={sqlDialect} onClose={() => setSqlView('workbench')} />

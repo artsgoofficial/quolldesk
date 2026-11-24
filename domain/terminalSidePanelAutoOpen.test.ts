@@ -102,3 +102,39 @@ test("Browser auto-open skips unsupported terminal protocols", () => {
     assert.equal(resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'browser', session: { protocol } }), null);
   }
 });
+
+test("database sessions never auto-open terminal-bound panes", () => {
+  const dbProtocols = ['redis', 'mysql', 'postgresql', 'mariadb', 'mssql', 'sqlite'] as const;
+  for (const protocol of dbProtocols) {
+    for (const boundTab of ['sftp', 'browser', 'scripts', 'history', 'system'] as const) {
+      assert.equal(
+        resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: boundTab, session: { protocol } }),
+        null,
+        `${boundTab} @ ${protocol}`,
+      );
+    }
+    assert.equal(resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'ai', session: { protocol } }), 'ai');
+    assert.equal(resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'theme', session: { protocol } }), 'theme');
+  }
+  assert.equal(resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'notes', session: { protocol: 'redis' } }), 'notes');
+});
+
+test("shell-capable sessions keep every terminal-bound auto-open target", () => {
+  for (const protocol of ['ssh', 'mosh', undefined, 'telnet', 'serial', 'et'] as const) {
+    assert.equal(
+      resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'scripts', session: { protocol } }),
+      'scripts',
+      `scripts @ ${protocol}`,
+    );
+    assert.equal(
+      resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'system', session: { protocol } }),
+      'system',
+      `system @ ${protocol}`,
+    );
+  }
+  // Local sessions follow their own preference path, unchanged by the DB gate.
+  assert.equal(
+    resolveSessionSidePanelAutoOpen({ ...preferences, terminalTab: 'scripts', session: { protocol: 'local' } }),
+    'sftp',
+  );
+});

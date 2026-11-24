@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import { formatBytes, parseMemoryUsageReply, parseScanReply, parseTypeReply, pickSample, type BigKeyRow } from './redisBigKeys';
+import { parseSentinelEntries, type SentinelEntry } from './redisSentinel';
 import { Button } from '../ui/button';
 
 export interface SlowlogRow {
@@ -26,7 +27,14 @@ export interface ClientRow {
   cmd: string;
 }
 
-type OpsTab = 'slowlog' | 'clients' | 'bigkeys';
+type OpsTab = 'slowlog' | 'clients' | 'bigkeys' | 'sentinel';
+
+const OPS_TAB_LABELS: Record<OpsTab, string> = {
+  slowlog: 'db.redis.ops.slowlog',
+  clients: 'db.redis.ops.clients',
+  bigkeys: 'db.redis.ops.bigkeys',
+  sentinel: 'db.redis.ops.sentinel',
+};
 
 /**
  * node-redis SLOWLOG GET reply (serialized): array of
@@ -82,6 +90,7 @@ export const RedisOpsPanel: React.FC<RedisOpsPanelProps> = ({ connectionId, onCl
   const [clientRows, setClientRows] = useState<ClientRow[]>([]);
   const [bigKeys, setBigKeys] = useState<BigKeyRow[]>([]);
   const [bigKeysProgress, setBigKeysProgress] = useState<{ scanned: number; probed: number; sample: number } | null>(null);
+  const [sentinelEntries, setSentinelEntries] = useState<SentinelEntry[]>([]);
   const bigKeysStopRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,11 +113,18 @@ export const RedisOpsPanel: React.FC<RedisOpsPanelProps> = ({ connectionId, onCl
     if (which === 'slowlog') {
       const reply = await run('SLOWLOG GET 25');
       setSlowlogRows(slowlogReplyToRows(reply));
+    } else if (which === 'sentinel') {
+      // SENTINEL masters on a non-sentinel server either errors (run reports
+      // it) or returns nothing — both surface through the shared channels.
+      const reply = await run('SENTINEL masters');
+      const entries = parseSentinelEntries(reply);
+      setSentinelEntries(entries);
+      if (entries.length === 0 && reply != null) setError(t('db.redis.ops.notSentinel'));
     } else {
       const reply = await run('CLIENT LIST');
       setClientRows(clientListTextToRows(typeof reply === 'string' ? reply : ''));
     }
-  }, [run]);
+  }, [run, t]);
 
   const analyzeBigKeys = useCallback(async () => {
     bigKeysStopRef.current = false;
@@ -145,6 +161,7 @@ export const RedisOpsPanel: React.FC<RedisOpsPanelProps> = ({ connectionId, onCl
       setBigKeysProgress(null);
     }
   }, [run]);
+
   useEffect(() => { void refresh(tab); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
   const switchTab = (which: OpsTab) => {
@@ -161,11 +178,11 @@ export const RedisOpsPanel: React.FC<RedisOpsPanelProps> = ({ connectionId, onCl
           <ArrowLeft size={13} />
         </Button>
         <span className="text-xs font-medium">{t('db.redis.ops.title')}</span>
-        {(['slowlog', 'clients', 'bigkeys'] as OpsTab[]).map((which) => (
+        {(['slowlog', 'clients', 'bigkeys', 'sentinel'] as OpsTab[]).map((which) => (
           <button key={which} type="button"
             className={`px-2 py-1 text-xs rounded-t ${tab === which ? 'bg-foreground/10 text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => switchTab(which)}>
-            {t(which === 'slowlog' ? 'db.redis.ops.slowlog' : which === 'clients' ? 'db.redis.ops.clients' : 'db.redis.ops.bigkeys')}
+            {t(OPS_TAB_LABELS[which])}
           </button>
         ))}
         <Button variant="ghost" size="sm" className="h-7 px-2 ml-auto" disabled={loading}
@@ -239,6 +256,30 @@ export const RedisOpsPanel: React.FC<RedisOpsPanelProps> = ({ connectionId, onCl
               </table>
             )}
           </>
+        )}
+        {tab === 'sentinel' && sentinelEntries.length > 0 && (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="text-muted-foreground">
+                <th className="text-left font-normal px-1.5 py-0.5">{t('db.redis.ops.sentinelName')}</th>
+                <th className="text-left font-normal px-1.5 py-0.5">IP</th>
+                <th className="text-left font-normal px-1.5 py-0.5">{t('db.redis.ops.sentinelPort')}</th>
+                <th className="text-left font-normal px-1.5 py-0.5">flags</th>
+                <th className="text-left font-normal px-1.5 py-0.5">{t('db.redis.ops.sentinelSlaves')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sentinelEntries.map((entry) => (
+                <tr key={`${entry.name}-${entry.ip}-${entry.port}`} className="hover:bg-foreground/5 align-top">
+                  <td className={cellCls}>{entry.name}</td>
+                  <td className={cellCls}>{entry.ip}</td>
+                  <td className={cellCls}>{entry.port}</td>
+                  <td className={cellCls}>{entry.flags}</td>
+                  <td className={cellCls}>{entry.numSlaves}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
         {tab === 'clients' && clientRows.length > 0 && (
           <table className="w-full border-collapse">

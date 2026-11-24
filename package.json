@@ -3,7 +3,7 @@
   "description": "QuollDesk is a modern SSH manager and terminal app with host grouping, SFTP, keychain, port forwarding, and a rich UI.",
   "homepage": "https://github.com/artsgoofficial/quolldesk",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "workspaces": [
     "packages/*",

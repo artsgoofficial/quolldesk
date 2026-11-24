@@ -37,7 +37,7 @@
 
 ---
 
-<img width="3358" height="1984" alt="image" src="docs/assets/readme/overview.webp" />
+<img width="3456" height="2168" alt="QuollDesk — SSH workspace with Redis, PostgreSQL and terminal tabs" src="docs/assets/readme/overview.webp" />
 
 ---
 
@@ -46,7 +46,7 @@
 
 This project is an **enhanced edition built on top of [NetCatty](https://github.com/binaricat/NetCatty)**, the open-source AI-powered SSH client. Everything NetCatty does — SSH terminals, SFTP, monitoring, workspaces, the built-in AI agent — is fully retained, and this edition **extends it with a complete database layer**:
 
-- 🗄️ **Database & Redis GUI clients** — Redis (standalone & cluster), MySQL, and PostgreSQL workbenches that open as tabs inside the same workspace, with optional SSH tunneling for every connection
+- 🗄️ **Database & Redis GUI clients** — Redis (standalone, cluster & Sentinel), MySQL, MariaDB, PostgreSQL, SQLite and SQL Server workbenches that open as tabs inside the same workspace, with optional SSH tunneling for every connection. Import existing connections from DBeaver or Navicat, and hosts from Xshell
 - 🧠 **Database-aware AI** — the built-in agent understands your open database connections: generate / optimize / fix SQL from natural language, and expose databases to external MCP clients
 - 🔄 **Kept in sync with upstream** — base QuollDesk features (terminals, SFTP, monitoring, themes) continue to work exactly as before
 
@@ -57,29 +57,42 @@ This project is an **enhanced edition built on top of [NetCatty](https://github.
 <a name="database-clients"></a>
 # 🗄️ Database & Redis Clients
 
-> 🚀 **Manage your data without leaving your terminal workspace.** Full GUI clients for **Redis** (standalone & cluster), **MySQL**, and **PostgreSQL** — connect directly or over SSH tunnels, browse and edit data visually, run queries with smart completion, and design tables without hand-writing DDL.
+> 🚀 **Manage your data without leaving your terminal workspace.** Full GUI clients for **Redis** (standalone, cluster & Sentinel), **MySQL**, **MariaDB**, **PostgreSQL**, **SQLite**, and **SQL Server** — connect directly or over SSH tunnels, browse and edit data visually, run queries with smart completion, and design tables without hand-writing DDL. Connections are grouped by engine in the vault, and existing connections can be imported from **DBeaver** (`.xml`) or **Navicat** (`.ncx`).
+
+<img width="3456" height="2168" alt="Database connections grouped by engine" src="docs/assets/readme/db-connections.webp" />
 
 ### 🔴 Redis Workbench
-- **Key browsing** — paged SCAN key tree with db selector (0–15, live key counts) and type badges; namespace grouping and lazy loading for large keyspaces
+- **Key browsing** — paged SCAN key tree with logical db selector (0–65535, live key counts) and type badges; namespace grouping and lazy loading for large keyspaces
+- **Server overview** — per-connection dashboard: server info, memory & fragmentation, keyspace stats (keys, TTL coverage) and live activity (ops/sec mini-chart, cache hit rate, client count)
 - **Per-type editors** — dedicated viewers/editors for string, hash, list, set and zset values; JSON values auto pretty-print with syntax highlighting (still editable while colored)
+- **Big-key analysis** — scan a keyspace for the largest keys by type to find memory hogs
 - **Key management** — create, rename, delete keys; view and edit TTL with live countdown
 - **Pub/Sub** — subscribe to channels or patterns and watch messages arrive live
 - **Command console** — raw Redis commands with history; dangerous subscription-control commands are routed to the dedicated UI
-- **Cluster support** — cluster node listing and per-node key access
+- **Cluster & Sentinel** — cluster node listing and per-node key access; Sentinel-aware topologies
 
-<img width="2800" height="1800" alt="Redis workbench — key tree, db selector and pretty-printed JSON value viewer" src="docs/assets/readme/redis-workbench.webp" />
+<img width="3456" height="2168" alt="Redis workbench — key tree, server overview cards and ops chart" src="docs/assets/readme/redis-overview.webp" />
 
-### 🐬 SQL Workbench (MySQL & PostgreSQL)
-- **Schema tree** — user databases/tables/views at a glance (system schemas filtered out); refresh on demand
-- **Data grid** — paged, sortable, multi-condition filtering; inline cell editing staged into a transactional **Apply changes**; add/delete rows; FK metadata with click-through navigation
+<img width="3456" height="2168" alt="Redis workbench — key tree, db selector and pretty-printed JSON value viewer" src="docs/assets/readme/redis-workbench.webp" />
+
+### 🐬 SQL Workbench (MySQL, MariaDB, PostgreSQL, SQLite & SQL Server)
+- **Seven workbench views** — Overview dashboard, Workbench, Backup/Restore, Sessions, **ER diagrams**, Lock manager and Users & Roles, one tab per concern
+- **Schema tree** — databases/schemas, tables and views at a glance (system objects filtered out); refresh on demand
+- **Data grid** — paged, sortable, multi-condition filtering, GROUP BY summaries and a record mode; inline cell editing staged into a transactional **Apply changes**; add/delete rows with batch operations; FK metadata with click-through navigation
+- **BLOB viewer** — open binary cells as image / PDF / hex dump, or decode text in UTF-8, GB18030, CP1252 and more
 - **Import & export** — export grids and query results to CSV / JSON / SQL INSERTs; guided CSV import wizard into any table; streamed SQL backup (whole database or single table, live progress) and restore from `.sql` files
-- **SQL editor** — multi-tab with multi-result grids, persisted query history and favorites
+- **SQL editor** — multi-tab with multi-statement result tabs, bind variables (`:name` / `?`), SQL formatting, persisted query history and favorites
 - **Smart completion** — dialect-aware autocompletion for keywords, tables and columns (dt-sql-parser), with live syntax-error squiggles
 - **EXPLAIN** — tabular plan for MySQL, text plan for PostgreSQL, one click from the editor
-- **Table designer** — create and alter tables visually; DDL preview, two-step confirm before execution
+- **ER diagrams** — auto-layout entity relationship diagrams with FK relationship lines and inline column comments; drag to arrange, click a table to open its data
+- **Table designer** — create and alter tables visually with dialect-specific type lists; DBeaver-style composite index editor (DESC / NULLS / WHERE, PostgreSQL expressions, `USING` method); DDL preview, two-step confirm before execution
+- **Users & Roles** — manage accounts, roles and grants: PostgreSQL role attributes & memberships, MySQL privilege diffing with batch grant/revoke
+- **Sessions & locks** — live session list with terminate, and a lock manager for blocking analysis
 - **Structure view** — columns, types, defaults, keys and indexes with the full `CREATE TABLE` definition
 
-<img width="2800" height="1800" alt="SQL workbench — schema tree and data grid with export controls" src="docs/assets/readme/sql-workbench.webp" />
+<img width="3456" height="2168" alt="SQL workbench — schema tree and data grid with export controls" src="docs/assets/readme/sql-workbench.webp" />
+
+<img width="3456" height="2168" alt="ER diagram with FK relationship lines" src="docs/assets/readme/sql-erd.webp" />
 
 ### 🤖 Database AI & MCP
 - **Workbench AI panel** — chat scoped to the current connection; AI 优化 / AI 修复 buttons turn the editor's SQL into natural-language prompts and write results back
@@ -106,13 +119,13 @@ This project is an **enhanced edition built on top of [NetCatty](https://github.
 
 Ask Quoll Agent to check a server's health, and it runs the right commands, analyzes the output, and gives you a clear summary — all in seconds.
 
-<img width="3302" height="1978" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
 
 #### 🚀 Multi-Host — Docker Swarm Cluster Setup
 
 Watch Quoll Agent orchestrate a Docker Swarm cluster across two servers in one conversation. It handles the init, token exchange, and node joining — you just tell it what you want.
 
-<img width="3294" height="1974" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
 
 ---
 
@@ -140,6 +153,7 @@ Everything below comes from base QuollDesk and works unchanged in this edition.
 ### 🗂️ Vault
 - **Multiple views** — grid / list / tree
 - **Fast search** — locate hosts and groups quickly
+- **Import** — bring hosts in from Xshell (`.xsh`) exports, database connections from DBeaver / Navicat
 
 ### 🖥️ Terminal Workspaces
 - **Split panes** — horizontal and vertical splits for multi-tasking
@@ -164,27 +178,27 @@ Everything below comes from base QuollDesk and works unchanged in this edition.
 <a name="screenshots"></a>
 # Screenshots
 
-## Main Window
+## Main Window & Terminal
 
-<img width="3290" height="1988" alt="image" src="docs/assets/readme/main-window.webp" />
+<img width="3456" height="2168" alt="Main window with connected SSH session" src="docs/assets/readme/main-window.webp" />
 
-<img width="3324" height="1992" alt="image" src="docs/assets/readme/main-window-terminal.webp" />
+<img width="3456" height="2168" alt="Terminal running htop" src="docs/assets/readme/main-window-terminal.webp" />
 
 ## Vault Views
 
-<img width="3292" height="1984" alt="image" src="docs/assets/readme/vault-grid.webp" />
+<img width="3456" height="2168" alt="Vault grid view" src="docs/assets/readme/vault-grid.webp" />
 
-<img width="3322" height="1998" alt="image" src="docs/assets/readme/vault-list.webp" />
+<img width="3456" height="2168" alt="Vault list view" src="docs/assets/readme/vault-list.webp" />
 
 ## Monitoring View
 
-<img width="3364" height="1982" alt="image" src="docs/assets/readme/monitoring.webp" />
+<img width="3456" height="2168" alt="Monitoring panel with live charts" src="docs/assets/readme/monitoring.webp" />
 
-<img width="3362" height="1980" alt="image" src="docs/assets/readme/monitoring-columns.webp" />
+<img width="3456" height="2168" alt="Monitoring list with metric columns" src="docs/assets/readme/monitoring-columns.webp" />
 
 ## Split Terminals
 
-<img width="1560" height="871" alt="split" src="docs/assets/readme/split-terminals.webp" />
+<img width="3456" height="2168" alt="Split terminal panes" src="docs/assets/readme/split-terminals.webp" />
 
 ---
 
@@ -321,7 +335,7 @@ npm run pack:linux   # Linux (AppImage + DEB + RPM)
 | Styling | Tailwind CSS 4 |
 | SSH/SFTP | ssh2, ssh2-sftp-client |
 | PTY | node-pty |
-| Databases | redis (node-redis), mysql2, pg, dt-sql-parser |
+| Databases | redis (node-redis), mysql2, pg, mssql, node:sqlite, dt-sql-parser, sql-formatter |
 | Icons | Lucide React |
 
 ---

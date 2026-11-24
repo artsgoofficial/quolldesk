@@ -37,7 +37,7 @@
 
 ---
 
-<img width="3358" height="1984" alt="image" src="docs/assets/readme/overview.webp" />
+<img width="3456" height="2168" alt="QuollDesk — SSH 工作区与 Redis / PostgreSQL / 终端标签页" src="docs/assets/readme/overview.webp" />
 
 ---
 
@@ -46,7 +46,7 @@
 
 本项目基于开源项目 [NetCatty](https://github.com/binaricat/NetCatty) 扩展而来。NetCatty 原有的全部能力 — SSH 终端、SFTP、监控、工作区、内置 AI Agent — **完整保留**；在此基础上**新增了完整的数据库层**：
 
-- 🗄️ **数据库与 Redis 图形化客户端** — Redis（单机与集群）、MySQL、PostgreSQL 三种工作台，与终端同窗口以标签页打开，每条连接均可选 SSH 隧道
+- 🗄️ **数据库与 Redis 图形化客户端** — Redis（单机、集群与哨兵）、MySQL、MariaDB、PostgreSQL、SQLite、SQL Server 六种工作台，与终端同窗口以标签页打开，每条连接均可选 SSH 隧道；支持从 DBeaver / Navicat 导入数据库连接，从 Xshell 导入主机
 - 🧠 **数据库 AI 能力** — 内置 AI 助手可感知当前打开的数据库连接：用自然语言生成 / 优化 / 修复 SQL，并可将数据库暴露给外部 MCP 客户端
 - 🔄 **与上游保持一致** — QuollDesk 的基础功能（终端、SFTP、监控、主题等）行为不变
 
@@ -57,29 +57,42 @@
 <a name="database-clients"></a>
 # 🗄️ 数据库与 Redis 客户端
 
-> 🚀 **不离开终端工作区即可管理数据。** 为 **Redis**（单机与集群）、**MySQL**、**PostgreSQL** 提供完整 GUI 客户端 — 直连或经 SSH 隧道，可视化浏览与编辑数据，智能补全写查询，免手写 DDL 设计表结构。
+> 🚀 **不离开终端工作区即可管理数据。** 为 **Redis**（单机、集群与哨兵）、**MySQL**、**MariaDB**、**PostgreSQL**、**SQLite**、**SQL Server** 提供完整 GUI 客户端 — 直连或经 SSH 隧道，可视化浏览与编辑数据，智能补全写查询，免手写 DDL 设计表结构。连接在数据库页按引擎分组展示，并支持从 **DBeaver**（`.xml`）或 **Navicat**（`.ncx`）导入既有连接。
+
+<img width="3456" height="2168" alt="按引擎分组的数据库连接" src="docs/assets/readme/db-connections.webp" />
 
 ### 🔴 Redis 工作台
-- **键浏览** — 分页 SCAN 键树，db0–15 切换（实时键数统计）、类型徽章、命名空间分组、大海量键懒加载
+- **键浏览** — 分页 SCAN 键树，逻辑库 0–65535 切换（实时键数统计）、类型徽章、命名空间分组、大海量键懒加载
+- **服务器概览** — 每连接仪表盘：服务器信息、内存与碎片率、键空间统计（键量 / TTL 覆盖）与实时活动（每秒操作数迷你曲线、缓存命中率、客户端数）
 - **类型化编辑器** — string / hash / list / set / zset 专属查看与编辑；JSON 值自动美化 + 语法高亮，且高亮状态下可直接编辑
+- **大键分析** — 按类型扫描键空间中的最大键，定位内存热点
 - **键管理** — 新建、重命名、删除键；TTL 查看与编辑（实时倒计时）
 - **Pub/Sub** — 订阅频道或模式，实时查看消息
 - **命令行控制台** — 直接执行 Redis 原生命令，带历史记录；订阅控制类命令自动引导到专用界面
-- **集群支持** — 集群节点列表与按节点访问键
+- **集群与哨兵** — 集群节点列表与按节点访问键；感知 Sentinel 拓扑
 
-<img width="2800" height="1800" alt="Redis workbench — key tree, db selector and pretty-printed JSON value viewer" src="docs/assets/readme/redis-workbench.webp" />
+<img width="3456" height="2168" alt="Redis 工作台 — 键树、服务器概览卡片与操作数曲线" src="docs/assets/readme/redis-overview.webp" />
 
-### 🐬 SQL 工作台（MySQL & PostgreSQL）
-- **Schema 树** — 用户库/表/视图一目了然（自动过滤系统库），支持手动刷新
-- **数据网格** — 分页、排序、多条件筛选；单元格内联编辑，暂存后事务性**应用更改**；新增/删除行；外键元数据与点击跳转
+<img width="3456" height="2168" alt="Redis 工作台 — 键树、db 选择器与 JSON 美化查看器" src="docs/assets/readme/redis-workbench.webp" />
+
+### 🐬 SQL 工作台（MySQL、MariaDB、PostgreSQL、SQLite 与 SQL Server）
+- **七大工作台视图** — 概览、工作台、备份/还原、会话、**ER 图**、锁管理、用户与角色，一个关注点一个视图
+- **Schema 树** — 库/Schema、表、视图一目了然（自动过滤系统对象），支持手动刷新
+- **数据网格** — 分页、排序、多条件筛选、GROUP BY 汇总与记录模式；单元格内联编辑，暂存后事务性**应用更改**；新增/删除行支持批量操作；外键元数据与点击跳转
+- **BLOB 查看器** — 二进制单元格按图片 / PDF / 十六进制打开，文本可按 UTF-8、GB18030、CP1252 等编码解码
 - **导入与导出** — 网格与查询结果导出 CSV / JSON / SQL INSERTS；CSV 导入向导；SQL 备份（整库或单表，流式进度）与 `.sql` 还原
-- **SQL 编辑器** — 多标签、多结果集，查询历史与收藏持久化
+- **SQL 编辑器** — 多标签、多语句结果分页签、绑定变量（`:name` / `?`）、SQL 格式化，查询历史与收藏持久化
 - **智能提示** — 基于方言的关键词 / 表 / 列补全（dt-sql-parser），实时语法错误红线
 - **EXPLAIN** — 编辑器内一键查看执行计划（MySQL 表格 / PostgreSQL 文本）
-- **表设计器** — 可视化建表与改表，DDL 预览 + 两步确认执行
+- **ER 图** — 自动布局的实体关系图，外键关系连线与列注释内联展示；拖拽排版，点击表直接打开数据
+- **表设计器** — 可视化建表与改表，方言专属类型清单；DBeaver 风格复合索引编辑器（DESC / NULLS / WHERE、PostgreSQL 表达式、`USING` 方式）；DDL 预览 + 两步确认执行
+- **用户与角色** — 管理账号、角色与授权：PostgreSQL 角色属性与成员关系，MySQL 权限差异比对与批量授予/回收
+- **会话与锁** — 实时会话列表可终止会话，锁管理器助力阻塞分析
 - **结构视图** — 列、类型、默认值、键与索引，附完整 `CREATE TABLE` 定义
 
-<img width="2800" height="1800" alt="SQL workbench — schema tree and data grid with export controls" src="docs/assets/readme/sql-workbench.webp" />
+<img width="3456" height="2168" alt="SQL 工作台 — schema 树与数据网格" src="docs/assets/readme/sql-workbench.webp" />
+
+<img width="3456" height="2168" alt="带外键关系连线的 ER 图" src="docs/assets/readme/sql-erd.webp" />
 
 ### 🤖 数据库 AI 与 MCP
 - **工作台 AI 面板** — 会话级绑定当前连接；「AI 优化 / AI 修复」按钮把编辑器 SQL 转为自然语言提示，结果一键回填
@@ -106,13 +119,13 @@
 
 让 Quoll Agent 检查服务器健康状态：自动执行正确的命令、分析输出并给出清晰结论 — 只需几秒。
 
-<img width="3302" height="1978" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-single-host.webp" />
 
 #### 🚀 多主机 — Docker Swarm 集群搭建
 
 看 Quoll Agent 在一次对话中跨两台服务器编排 Docker Swarm 集群：初始化、令牌交换、节点加入全自动 — 你只需要说出目标。
 
-<img width="3294" height="1974" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
+<img width="3456" height="2168" alt="image" src="docs/assets/readme/quoll-multi-host.webp" />
 
 ---
 
@@ -140,6 +153,7 @@
 ### 🗂️ Vault 主机管理
 - **多种视图** — 网格 / 列表 / 树
 - **快速搜索** — 快速定位主机与分组
+- **导入** — 从 Xshell（`.xsh`）导出导入主机，从 DBeaver / Navicat 导入数据库连接
 
 ### 🖥️ 终端工作区
 - **分屏** — 水平/垂直拆分，多任务并行
@@ -166,25 +180,25 @@
 
 ## 主窗口
 
-<img width="3290" height="1988" alt="image" src="docs/assets/readme/main-window.webp" />
+<img width="3456" height="2168" alt="主窗口与已连接 SSH 会话" src="docs/assets/readme/main-window.webp" />
 
-<img width="3324" height="1992" alt="image" src="docs/assets/readme/main-window-terminal.webp" />
+<img width="3456" height="2168" alt="终端运行 htop" src="docs/assets/readme/main-window-terminal.webp" />
 
 ## Vault 视图
 
-<img width="3292" height="1984" alt="image" src="docs/assets/readme/vault-grid.webp" />
+<img width="3456" height="2168" alt="Vault 网格视图" src="docs/assets/readme/vault-grid.webp" />
 
-<img width="3322" height="1998" alt="image" src="docs/assets/readme/vault-list.webp" />
+<img width="3456" height="2168" alt="Vault 列表视图" src="docs/assets/readme/vault-list.webp" />
 
 ## 监控视图
 
-<img width="3364" height="1982" alt="image" src="docs/assets/readme/monitoring.webp" />
+<img width="3456" height="2168" alt="监控面板实时图表" src="docs/assets/readme/monitoring.webp" />
 
-<img width="3362" height="1980" alt="image" src="docs/assets/readme/monitoring-columns.webp" />
+<img width="3456" height="2168" alt="监控列表与指标列" src="docs/assets/readme/monitoring-columns.webp" />
 
 ## 分屏终端
 
-<img width="1560" height="871" alt="split" src="docs/assets/readme/split-terminals.webp" />
+<img width="3456" height="2168" alt="分屏终端" src="docs/assets/readme/split-terminals.webp" />
 
 ---
 
@@ -317,7 +331,7 @@ npm run pack:linux   # Linux（AppImage + DEB + RPM）
 | 样式 | Tailwind CSS 4 |
 | SSH/SFTP | ssh2, ssh2-sftp-client |
 | PTY | node-pty |
-| 数据库 | redis (node-redis), mysql2, pg, dt-sql-parser |
+| 数据库 | redis (node-redis), mysql2, pg, mssql, node:sqlite, dt-sql-parser, sql-formatter |
 | 图标 | Lucide React |
 
 ---

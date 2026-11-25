@@ -7,7 +7,7 @@
 import { ArrowLeft, Loader2, Search, Square, Table2 } from 'lucide-react';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
-import { sqlQuoteIdent, SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
+import { sqlQuoteIdent, type SqlEngineId } from '../../domain/models/dbEngines';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import { fetchSqlSchemaTree } from '@/infrastructure/services/sqlSchemaTreeCache';
 import { Button } from '../ui/button';
@@ -15,6 +15,7 @@ import { Input } from '../ui/input';
 import {
   buildProbeSql, matchesTerm, textLikeColumns, type SqlSearchHit,
 } from './sqlSearch';
+import { buildSchemaJobs } from './sqlSchemaJobs';
 
 /** Hard caps so a huge database cannot hang the panel. */
 const MAX_TABLES = 200;
@@ -23,7 +24,7 @@ const PROBE_ROWS = 3;
 interface SqlSearchPanelProps {
   connectionId: string;
   dialect: SqlEngineId;
-  /** Active schema for schemaQualified engines; empty = search all schemas. */
+  /** Schema/database to scope the search to; empty = search everything. */
   selectedSchema?: string;
   onOpenData: (table: string, schema?: string) => void;
   onClose: () => void;
@@ -43,7 +44,6 @@ export const SqlSearchPanel: React.FC<SqlSearchPanelProps> = ({
   const cancelledRef = useRef(false);
   const runIdRef = useRef(0);
 
-  const schemaQualified = SQL_ENGINE_BY_ID[dialect].schemaQualified;
   const canRun = term.trim().length > 0 && !running;
 
   const runSearch = useCallback(async () => {
@@ -57,17 +57,12 @@ export const SqlSearchPanel: React.FC<SqlSearchPanelProps> = ({
     setProgress({ done: 0, total: 0 });
     try {
       const tree = await fetchSqlSchemaTree(dialect, connectionId);
-      const jobs: { schema: string | null; table: string }[] = [];
-      const tablesOnly = new Set<string>();
-      for (const db of tree.databases) {
-        if (schemaQualified && selectedSchema && db.name !== selectedSchema) continue;
-        for (const table of db.tables) {
-          jobs.push({ schema: schemaQualified ? db.name : null, table });
-          tablesOnly.add(`${db.name}.${table}`);
-        }
-        // Views participate in object-name matching only (data probe v1 = tables).
-        for (const view of db.views) jobs.push({ schema: schemaQualified ? db.name : null, table: view });
-      }
+      // Views participate in object-name matching only (data probe v1 = tables),
+      // so the probe-eligible set comes from the tables-only pass.
+      const tablesOnly = new Set(
+        buildSchemaJobs(dialect, tree.databases, selectedSchema).map((j) => `${j.schema ?? ''}.${j.table}`),
+      );
+      const jobs = buildSchemaJobs(dialect, tree.databases, selectedSchema, { includeViews: true });
       const capped = jobs.slice(0, MAX_TABLES);
       setProgress({ done: 0, total: capped.length });
       const scanned: SqlSearchHit[] = [];
@@ -105,7 +100,7 @@ export const SqlSearchPanel: React.FC<SqlSearchPanelProps> = ({
     } finally {
       if (runIdRef.current === runId) setRunning(false);
     }
-  }, [term, running, dialect, connectionId, selectedSchema, withData, client, schemaQualified]);
+  }, [term, running, dialect, connectionId, selectedSchema, withData, client]);
 
   const visible = useMemo(
     () => (running ? hits.filter((h) => h.nameHit || h.matchedColumnNames.length > 0 || h.dataHit) : hits),

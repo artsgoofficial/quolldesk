@@ -7,7 +7,7 @@
 import { ArrowLeft, Loader2, RefreshCw } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../application/i18n/I18nProvider';
-import { SQL_ENGINE_BY_ID, type SqlEngineId } from '../../domain/models/dbEngines';
+import { type SqlEngineId } from '../../domain/models/dbEngines';
 import { databaseClient, dbErrorMessage } from '@/infrastructure/services/databaseClient';
 import { fetchSqlSchemaTree } from '@/infrastructure/services/sqlSchemaTreeCache';
 import { Button } from '../ui/button';
@@ -15,6 +15,7 @@ import {
   BOX_WIDTH, BOX_HEADER_HEIGHT, ROW_HEIGHT,
   computeFkAnchors, erdCommentText, erdTitleText, layoutBoxes, movedBeyondSlop, type ErdBox, type ErdFkEdge,
 } from './erdLayout';
+import { buildSchemaJobs } from './sqlSchemaJobs';
 
 const MAX_TABLES = 50;
 const MAX_COLUMNS_SHOWN = 14;
@@ -22,7 +23,7 @@ const MAX_COLUMNS_SHOWN = 14;
 interface SqlErdPanelProps {
   connectionId: string;
   dialect: SqlEngineId;
-  /** Active schema for schemaQualified engines; empty = first schema found. */
+  /** Schema/database to scope the diagram to; empty = every schema. */
   selectedSchema?: string;
   onOpenData: (table: string, schema?: string) => void;
   onClose: () => void;
@@ -52,12 +53,7 @@ export const SqlErdPanel: React.FC<SqlErdPanelProps> = ({ connectionId, dialect,
     setPan({ x: 0, y: 0 });
     try {
       const tree = await fetchSqlSchemaTree(dialect, connectionId);
-      const schemaQualified = SQL_ENGINE_BY_ID[dialect].schemaQualified;
-      const jobs: { schema: string | null; table: string }[] = [];
-      for (const db of tree.databases) {
-        if (schemaQualified && selectedSchema && db.name !== selectedSchema) continue;
-        for (const table of db.tables) jobs.push({ schema: schemaQualified ? db.name : null, table });
-      }
+      const jobs = buildSchemaJobs(dialect, tree.databases, selectedSchema);
       const capped = jobs.slice(0, MAX_TABLES);
       const boxes: ErdBox[] = [];
       const edges: ErdFkEdge[] = [];
